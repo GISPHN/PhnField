@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PhnField</title>
 
-<!-- MapLibre（Drawと相性のよい 2系） -->
+<!-- MapLibre（Drawと相性のよい2系） -->
 <link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet">
 <script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
 
@@ -13,13 +13,13 @@
 <link href="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.css" rel="stylesheet">
 <script src="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.js"></script>
 
-<!-- Turf（円の生成/距離計算） -->
+<!-- Turf（円・ベアリング等） -->
 <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 
-<!-- FlatGeobuf（ブラウザで .fgb 生成） -->
+<!-- FlatGeobuf（.fgb書き出し） -->
 <script src="https://unpkg.com/flatgeobuf/dist/flatgeobuf-geojson.min.js"></script>
 
-<!-- Yjs + y-webrtc（P2P同期・サーバ不要）。読めない場合は自動でローカルモードへ -->
+<!-- Yjs + y-webrtc（完全無料のサーバ不要P2P同期） -->
 <script src="https://unpkg.com/yjs@13.6.18/dist/yjs.js"></script>
 <script src="https://unpkg.com/y-webrtc@10.6.9/dist/y-webrtc.min.js"></script>
 
@@ -27,20 +27,32 @@
   html, body, #map { height:100%; margin:0; padding:0; }
   .toolbar{
     position:absolute; top:60px; left:10px; z-index:999;
-    background:#fff; padding:10px; border-radius:8px;
-    box-shadow:0 2px 8px rgba(0,0,0,.15);
+    background:#fff; padding:12px; border-radius:10px;
+    box-shadow:0 2px 10px rgba(0,0,0,.15);
     font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+    width: 230px;
   }
-  .toolbar strong{ display:block; margin-bottom:6px; }
-  .toolbar .small{ font-size:12px; color:#555; margin-bottom:8px; }
+  .toolbar h1{ font-size:16px; margin:0 0 6px; }
+  .toolbar .small{ font-size:12px; color:#555; margin:0 0 10px; }
   .toolbar button{
-    display:block; width:210px; margin:5px 0; padding:10px;
-    font-size:15px; border:1px solid #ccc; border-radius:6px; background:#f8f8f8;
+    display:block; width:100%; margin:6px 0; padding:10px 12px;
+    font-size:15px; border:1px solid #ccc; border-radius:8px; background:#f8f8f8;
+    text-align:left;
   }
   .toolbar button:hover{ background:#eee; }
+  .toolbar button.active{ background:#dff0ff; border-color:#2b7fff; }
+  .row{ display:flex; gap:8px; align-items:center; margin:6px 0; }
+  .row label{ font-size:12px; width:74px; }
+  .row input[type="color"]{ width:40px; height:28px; border:none; background:none; padding:0; }
+  .row input[type="range"]{ flex:1; }
+  .hr{ border-top:1px solid #e6e6e6; margin:10px 0; }
+
   .comment-label{
-    background: rgba(255,255,255,0.75);
-    border-radius:4px; padding:2px 6px; font-size:12px; pointer-events:none;
+    background: rgba(0,0,0,0.75);
+    color:#fff; border-radius:6px; padding:4px 8px; font-size:12px;
+    box-shadow:0 1px 6px rgba(0,0,0,.25);
+    max-width:200px; line-height:1.3;
+    pointer-events:none;
   }
 </style>
 </head>
@@ -48,60 +60,70 @@
 <div id="map"></div>
 
 <div class="toolbar">
-  <strong>PhnField</strong>
+  <h1>PhnField</h1>
   <div id="status" class="small">起動中…</div>
 
   <!-- 描画モード -->
-  <button id="btn-select">選択/移動モード</button>
+  <button id="btn-select"  class="active">選択/移動モード</button>
   <button id="btn-point">点モード</button>
   <button id="btn-line">線モード</button>
   <button id="btn-polygon">ポリゴンモード</button>
-  <button id="btn-arrow">矢印モード</button>
-  <button id="btn-circle">円モード</button>
+  <button id="btn-arrow">矢印モード（線の終点に矢じり）</button>
+  <button id="btn-circle">円モード（中心→クリックで確定）</button>
   <button id="btn-trash">選択を削除</button>
 
-  <hr>
+  <div class="hr"></div>
+
+  <!-- スタイル設定 -->
+  <div class="row"><label>線色</label>  <input type="color" id="stroke" value="#2b7fff"><input id="strokeW" type="range" min="1" max="10" step="1" value="3"></div>
+  <div class="row"><label>面色</label>  <input type="color" id="fill" value="#3b82f6"><input id="fillO" type="range" min="0" max="1" step="0.05" value="0.25"></div>
+  <div class="row"><label>点アイコン</label><span class="small">（点はピン表示）</span></div>
+  <div class="row">
+    <button id="btn-apply-selected">選択に適用</button>
+    <button id="btn-apply-all">全体に適用</button>
+  </div>
+
+  <div class="hr"></div>
 
   <!-- 操作 -->
   <button id="btn-save-geojson">GeoJSONで保存</button>
   <button id="btn-save-fgb">FlatGeobufで保存</button>
   <button id="btn-clear">全削除</button>
   <button id="btn-toggle-labels">コメント表示 切替</button>
-  <button id="btn-toggle-basemap">地図切替（OSM⇄GSI）</button>
+  <button id="btn-toggle-basemap">地図切替（GSI⇄OSM⇄写真）</button>
 </div>
 
 <script>
 (function(){
   const $ = (id)=>document.getElementById(id);
   const setStatus = (s)=>{ const el=$('status'); if(el) el.textContent=s; };
+  const setActive = (id)=>{
+    document.querySelectorAll('.toolbar button').forEach(b=>b.classList.remove('active'));
+    $(id)?.classList.add('active');
+  };
 
   const roomName = new URLSearchParams(location.search).get("room") || "default";
 
-  /* ===================== ベースマップ（OSM/GSIを同時に読み込み → レイヤ可視切替） ===================== */
+  /* ====== ベースマップ（標準/OSM/全国最新写真） ====== */
   const map = new maplibregl.Map({
     container: 'map',
     style: {
       "version": 8,
       "sources": {
-        "osm": {
-          "type": "raster",
-          "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-          "tileSize": 256,
-          "attribution": "© OpenStreetMap contributors"
-        },
-        "gsi": {
-          "type": "raster",
-          "tiles": ["https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png"],
-          "tileSize": 256,
-          "attribution": "地理院タイル（<a href='https://maps.gsi.go.jp/development/ichiran.html' target='_blank' rel='noopener'>出典</a>）"
-        }
+        "gsi": { "type": "raster", "tiles": ["https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png"], "tileSize": 256,
+                 "attribution": "地理院タイル（<a href='https://maps.gsi.go.jp/development/ichiran.html' target='_blank' rel='noopener'>出典</a>）" },
+        "osm": { "type": "raster", "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"], "tileSize": 256,
+                 "attribution": "© OpenStreetMap contributors" },
+        "gsi_photo": { "type": "raster", "tiles": ["https://cyberjapandata.gsi.go.jp/xyz/seamlessphoto/{z}/{x}/{y}.jpg"], "tileSize": 256,
+                 "attribution": "地理院タイル（全国最新写真）" }
       },
       "layers": [
-        { "id": "basemap-gsi", "type": "raster", "source": "gsi", "layout": {"visibility":"visible"} },
-        { "id": "basemap-osm", "type": "raster", "source": "osm", "layout": {"visibility":"none"} }
+        { "id": "basemap-gsi",    "type":"raster", "source":"gsi",        "layout":{"visibility":"visible"} },
+        { "id": "basemap-osm",    "type":"raster", "source":"osm",        "layout":{"visibility":"none"} },
+        { "id": "basemap-photo",  "type":"raster", "source":"gsi_photo",  "layout":{"visibility":"none"} }
       ]
     },
-    center: [135.8049, 34.6851], // 奈良
+    center: [135.8049, 34.6851],
     zoom: 12,
     attributionControl: true
   });
@@ -109,218 +131,254 @@
   map.addControl(new maplibregl.AttributionControl({compact:false}), 'bottom-right');
   let basemap = 'GSI';
 
-  /* ===================== Draw ===================== */
-  const Draw = new MapboxDraw({
-    displayControlsDefault: false,
-    defaultMode: 'simple_select'
+  /* ====== Draw（編集用） ====== */
+  const Draw = new MapboxDraw({ displayControlsDefault:false, defaultMode:'simple_select' });
+  map.addControl(Draw, 'top-left');
+
+  /* ====== スタイル表示用の独自レイヤ（Drawの見た目を上書き） ====== */
+  map.on('load', ()=>{
+    // 点アイコン画像（Canvasで生成）
+    if(!map.hasImage('phn-pin')){
+      const pin = document.createElement('canvas'); pin.width=64; pin.height=64;
+      const ctx = pin.getContext('2d');
+      ctx.fillStyle = '#ff2d55'; // 赤ピン
+      ctx.beginPath(); ctx.moveTo(32,6); ctx.arc(32,26,14,Math.PI*1.15,Math.PI*1.85); ctx.closePath(); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(32,58); ctx.quadraticCurveTo(20,40,32,32); ctx.quadraticCurveTo(44,40,32,58); ctx.fill();
+      ctx.fillStyle='#fff'; ctx.beginPath(); ctx.arc(32,26,6,0,Math.PI*2); ctx.fill();
+      map.addImage('phn-pin', pin, {pixelRatio:2});
+    }
+
+    map.addSource('phn-style', { type:'geojson', data:{type:'FeatureCollection',features:[]} });
+
+    // 面（塗り）
+    map.addLayer({
+      id:'phn-fill', type:'fill', source:'phn-style',
+      filter:['==', ['geometry-type'], 'Polygon'],
+      paint:{
+        'fill-color': ['coalesce',['get','fill'],'#3b82f6'],
+        'fill-opacity': ['coalesce',['get','fill-opacity'],0.25]
+      }
+    });
+
+    // 線（ポリゴン境界＋ライン）
+    map.addLayer({
+      id:'phn-outline', type:'line', source:'phn-style',
+      filter:['==', ['geometry-type'], 'Polygon'],
+      paint:{
+        'line-color': ['coalesce',['get','stroke'],'#2b7fff'],
+        'line-width': ['coalesce',['get','stroke-width'],3]
+      }
+    });
+    map.addLayer({
+      id:'phn-line', type:'line', source:'phn-style',
+      filter:['==', ['geometry-type'], 'LineString'],
+      paint:{
+        'line-color': ['coalesce',['get','stroke'],'#2b7fff'],
+        'line-width': ['coalesce',['get','stroke-width'],3],
+        'line-cap':'round','line-join':'round'
+      }
+    });
+
+    // 点アイコン
+    map.addLayer({
+      id:'phn-point', type:'symbol', source:'phn-style',
+      filter:['==', ['geometry-type'], 'Point'],
+      layout:{ 'icon-image':'phn-pin', 'icon-size': 0.6, 'icon-allow-overlap': true }
+    });
+
+    // 矢印（終点にヘッド）
+    addArrowImageOnce();
+    map.addSource('arrow-points', { type:'geojson', data:{type:'FeatureCollection',features:[]} });
+    map.addLayer({
+      id:'arrow-points-layer', type:'symbol', source:'arrow-points',
+      layout:{
+        'icon-image':'arrow-head', 'icon-size':0.9,
+        'icon-rotate':['get','bearing'],
+        'icon-allow-overlap': true
+      }
+    });
+
+    // 円プレビュー
+    map.addSource('circle-preview', { type:'geojson', data:{type:'FeatureCollection',features:[]} });
+    map.addLayer({
+      id:'circle-preview-fill', type:'fill', source:'circle-preview',
+      paint:{ 'fill-color':'#1e90ff', 'fill-opacity':0.20 }
+    });
+    map.addLayer({
+      id:'circle-preview-line', type:'line', source:'circle-preview',
+      paint:{ 'line-color':'#1e90ff', 'line-width':3, 'line-dasharray':[2,1] }
+    });
+
+    refreshStyleLayers();
   });
-  map.addControl(Draw, 'top-left'); // 選択UIなどの表示に必要
 
-  /* ===================== 矢印ヘッド画像を生成（Canvas） ===================== */
-  function addArrowImageOnce() {
+  function refreshStyleLayers(){
+    const fc = Draw.getAll();
+    if (map.getSource('phn-style')) map.getSource('phn-style').setData(fc);
+    updateLabels(); updateArrowHeads();
+  }
+
+  /* ====== 矢印ヘッド画像（Canvas生成） ====== */
+  function addArrowImageOnce(){
     if (map.hasImage('arrow-head')) return;
-    const size = 64, cvs = document.createElement('canvas');
-    cvs.width = cvs.height = size;
-    const ctx = cvs.getContext('2d');
-    ctx.fillStyle = '#111';
-    ctx.beginPath();
-    ctx.moveTo(size*0.15, size*0.2);
-    ctx.lineTo(size*0.85, size*0.5);
-    ctx.lineTo(size*0.15, size*0.8);
-    ctx.closePath();
-    ctx.fill();
-    map.addImage('arrow-head', cvs, { pixelRatio: 2 });
+    const size=64, cvs=document.createElement('canvas'); cvs.width=cvs.height=size;
+    const ctx=cvs.getContext('2d'); ctx.fillStyle='#111';
+    ctx.beginPath(); ctx.moveTo(size*0.15, size*0.2); ctx.lineTo(size*0.85, size*0.5); ctx.lineTo(size*0.15, size*0.8); ctx.closePath(); ctx.fill();
+    map.addImage('arrow-head', cvs, {pixelRatio:2});
   }
 
-  /* ===================== 矢印ポイント／円プレビュー用ソース＆レイヤ ===================== */
-  function ensureOverlays() {
-    if (!map.getSource('arrow-points')) {
-      map.addSource('arrow-points', { type:'geojson', data:{type:'FeatureCollection',features:[]} });
-      map.addLayer({
-        id:'arrow-points-layer', type:'symbol', source:'arrow-points',
-        layout:{
-          'icon-image':'arrow-head',
-          'icon-size': 0.5,
-          'icon-rotate': ['get','bearing'],
-          'icon-allow-overlap': true
-        }
-      });
-    }
-    if (!map.getSource('circle-preview')) {
-      map.addSource('circle-preview', { type:'geojson', data:{type:'FeatureCollection',features:[]} });
-      map.addLayer({
-        id:'circle-preview-fill', type:'fill', source:'circle-preview',
-        paint:{ 'fill-color':'#1e90ff', 'fill-opacity':0.15 }
-      });
-      map.addLayer({
-        id:'circle-preview-line', type:'line', source:'circle-preview',
-        paint:{ 'line-color':'#1e90ff', 'line-width':2, 'line-dasharray':[2,2] }
-      });
-    }
-  }
-  map.on('load', ()=>{ addArrowImageOnce(); ensureOverlays(); });
-
-  /* ===================== コメントの吹き出し ===================== */
+  /* ====== コメント吹き出し ====== */
   let showLabels = true;
-  function updateLabels() {
-    document.querySelectorAll('.mapboxgl-marker').forEach(m => m.remove());
+  function updateLabels(){
+    document.querySelectorAll('.mapboxgl-marker').forEach(m=>m.remove());
     if (!showLabels) return;
-    const fs = Draw.getAll().features;
-    fs.forEach(f => {
-      const c = (f.properties && f.properties.comment) ? String(f.properties.comment) : '';
-      if (!c) return;
-      const el = document.createElement('div');
-      el.className = 'comment-label';
-      el.textContent = c;
+    Draw.getAll().features.forEach(f=>{
+      const c = f.properties?.comment || ''; if(!c) return;
       let lngLat;
-      if (f.geometry.type === 'Point') lngLat = f.geometry.coordinates;
-      else if (f.geometry.type === 'LineString') lngLat = f.geometry.coordinates[0];
+      if (f.geometry.type==='Point') lngLat = f.geometry.coordinates;
+      else if (f.geometry.type==='LineString') lngLat = f.geometry.coordinates[0];
       else lngLat = f.geometry.coordinates[0][0];
+      const el = document.createElement('div'); el.className='comment-label'; el.textContent=c;
       new maplibregl.Marker({element:el}).setLngLat(lngLat).addTo(map);
     });
   }
 
-  /* ===================== 矢印先端を更新 ===================== */
-  function updateArrowHeads() {
+  /* ====== 矢印の先端 ====== */
+  function updateArrowHeads(){
     if (!map.getSource('arrow-points')) return;
-    const pts = [];
+    const pts=[];
     Draw.getAll().features.forEach(f=>{
-      if (f.geometry.type==='LineString' && f.properties && f.properties.arrow===true) {
-        const coords = f.geometry.coordinates;
-        if (coords.length<2) return;
-        const a = coords[coords.length-2], b = coords[coords.length-1];
-        const bearing = turf.bearing(turf.point(a), turf.point(b));
-        pts.push({ type:'Feature', geometry:{type:'Point', coordinates:b}, properties:{bearing} });
+      if (f.geometry.type==='LineString' && f.properties?.arrow===true){
+        const coords=f.geometry.coordinates; if(coords.length<2) return;
+        const a=coords[coords.length-2], b=coords[coords.length-1];
+        const bearing=turf.bearing(turf.point(a), turf.point(b));
+        pts.push({type:'Feature',geometry:{type:'Point',coordinates:b},properties:{bearing}});
       }
     });
     map.getSource('arrow-points').setData({type:'FeatureCollection',features:pts});
   }
 
-  /* ===================== P2Pリアルタイム（y-webrtc）／失敗時はローカルにフォールバック ===================== */
-  let ydoc = null, provider = null, yfeatures = null, realtime = false;
-  try {
-    if (window.ywebrtc && window.Y) {
-      ydoc = new Y.Doc();
-      provider = new ywebrtc.WebrtcProvider("phnfield-"+roomName, ydoc, {
-        signaling: ['wss://signaling.yjs.dev']
-      });
-      yfeatures = ydoc.getArray("features");
-      yfeatures.observe(()=>{ // 受信 → 反映
+  /* ====== P2P同期（失敗時はローカル） ====== */
+  let ydoc=null, provider=null, yfeatures=null, realtime=false;
+  try{
+    if(window.ywebrtc && window.Y){
+      ydoc=new Y.Doc();
+      provider=new ywebrtc.WebrtcProvider("phnfield-"+roomName, ydoc, { signaling:['wss://signaling.yjs.dev'] });
+      yfeatures=ydoc.getArray("features");
+      yfeatures.observe(()=>{ // 受信→反映
         const arr = yfeatures.toArray();
-        Draw.deleteAll();
-        if (arr.length) Draw.add({type:'FeatureCollection', features:arr});
-        updateLabels(); updateArrowHeads();
+        Draw.deleteAll(); if(arr.length) Draw.add({type:'FeatureCollection',features:arr});
+        refreshStyleLayers();
       });
-      realtime = true;
-      setStatus("リアルタイム同期：接続中（room=" + roomName + "）");
-      provider.on('status', e=> setStatus("リアルタイム同期：" + e.status + "（room=" + roomName + "）"));
-    } else {
-      throw new Error("y-webrtc not loaded");
-    }
-  } catch(err){
-    console.warn("P2P同期をローカルにフォールバック:", err);
-    setStatus("ローカル編集（同期なし）");
-  }
+      realtime=true;
+      setStatus("リアルタイム同期：接続中（room="+roomName+"）");
+      provider.on('status', e=> setStatus("リアルタイム同期："+e.status+"（room="+roomName+"）"));
+    } else { throw new Error('y-webrtc not loaded'); }
+  }catch(e){ console.warn('P2P失敗：ローカル編集にフォールバック', e); setStatus('ローカル編集（同期なし）'); }
 
   function syncToY(){
-    if (!realtime) return; // ローカル時は何もしない
-    const arr = Draw.getAll().features;
-    ydoc.transact(()=>{ yfeatures.delete(0, yfeatures.length); yfeatures.push(arr); });
+    if(!realtime) return;
+    const arr=Draw.getAll().features;
+    ydoc.transact(()=>{ yfeatures.delete(0,yfeatures.length); yfeatures.push(arr); });
   }
 
-  /* ===================== 描画イベント（コメント入力・同期・ラベル・矢印） ===================== */
-  function askCommentAndSave(id){
-    const c = prompt("コメントを入力（任意）") || "";
-    Draw.setFeatureProperty(id, 'comment', c);
-    updateLabels(); updateArrowHeads(); syncToY();
-  }
-  map.on('draw.create', e=>{
-    const f = e.features[0];
-    // 矢印モード中なら flag
-    if (arrowMode && f.geometry.type==='LineString') {
-      Draw.setFeatureProperty(f.id, 'arrow', true);
-      arrowMode = false;
-    }
-    askCommentAndSave(f.id);
-  });
-  map.on('draw.update', ()=>{ updateLabels(); updateArrowHeads(); syncToY(); });
-  map.on('draw.delete', ()=>{ updateLabels(); updateArrowHeads(); syncToY(); });
-
-  /* ===================== 円モード（中心→半径点） ===================== */
+  /* ====== 円モード（中心→マウス移動で拡大プレビュー→2回目クリックで確定） ====== */
   let circleMode=false, circleCenter=null;
   function updateCirclePreview(center, cursor){
-    if (!center) return;
+    if(!center) return;
     const r = turf.distance(turf.point(center), turf.point([cursor.lng, cursor.lat]), {units:'kilometers'})*1000;
-    const poly = turf.circle(center, Math.max(r,1), {steps:64, units:'meters'});
+    const poly = turf.circle(center, Math.max(r, 1), {steps:64, units:'meters'});
     map.getSource('circle-preview').setData(poly);
   }
-  map.on('mousemove', (e)=>{ if(circleMode && circleCenter){ updateCirclePreview(circleCenter, e.lngLat); } });
-
+  map.on('mousemove', (e)=>{ if(circleMode && circleCenter) updateCirclePreview(circleCenter, e.lngLat); });
   map.on('click', (e)=>{
-    if (!circleMode) return;
-    if (!circleCenter){
-      circleCenter = [e.lngLat.lng, e.lngLat.lat];
+    if(!circleMode) return;
+    if(!circleCenter){
+      circleCenter=[e.lngLat.lng,e.lngLat.lat];
       updateCirclePreview(circleCenter, e.lngLat);
-    } else {
-      const r = turf.distance(turf.point(circleCenter), turf.point([e.lngLat.lng, e.lngLat.lat]), {units:'kilometers'})*1000;
+    }else{
+      const r = turf.distance(turf.point(circleCenter), turf.point([e.lngLat.lng,e.lngLat.lat]), {units:'kilometers'})*1000;
       const poly = turf.circle(circleCenter, Math.max(r,1), {steps:64, units:'meters'});
-      const id = Draw.add({ type:'Feature', geometry: poly.geometry, properties:{ shape:'circle', radius_m: Math.round(r) } });
+      const id = Draw.add({ type:'Feature', geometry:poly.geometry, properties:{ shape:'circle', radius_m:Math.round(r) } });
       map.getSource('circle-preview').setData({type:'FeatureCollection',features:[]});
       circleMode=false; circleCenter=null; map.getCanvas().style.cursor='';
       askCommentAndSave(Array.isArray(id)?id[0]:id);
     }
   });
 
-  /* ===================== 矢印モード・UIボタン等（確実にバインド） ===================== */
+  /* ====== UI：モード切替 ====== */
   let arrowMode=false;
-
-  $('btn-select').onclick  = ()=> Draw.changeMode('simple_select');
-  $('btn-point').onclick   = ()=> Draw.changeMode('draw_point');
-  $('btn-line').onclick    = ()=> Draw.changeMode('draw_line_string');
-  $('btn-polygon').onclick = ()=> Draw.changeMode('draw_polygon');
-  $('btn-trash').onclick   = ()=> { Draw.trash(); updateLabels(); updateArrowHeads(); syncToY(); };
-
-  $('btn-arrow').onclick = ()=>{
-    arrowMode = true;
-    Draw.changeMode('draw_line_string');
-    setStatus((realtime?'リアルタイム同期':'ローカル編集')+'｜矢印モード：線を描くと自動で矢印化');
+  const modeBtns=['btn-select','btn-point','btn-line','btn-polygon','btn-arrow','btn-circle'];
+  $('btn-select').onclick  = ()=>{ Draw.changeMode('simple_select'); setActive('btn-select'); };
+  $('btn-point').onclick   = ()=>{ Draw.changeMode('draw_point');    setActive('btn-point'); };
+  $('btn-line').onclick    = ()=>{ Draw.changeMode('draw_line_string'); setActive('btn-line'); };
+  $('btn-polygon').onclick = ()=>{ Draw.changeMode('draw_polygon');  setActive('btn-polygon'); };
+  $('btn-arrow').onclick   = ()=>{
+    arrowMode=true; Draw.changeMode('draw_line_string'); setActive('btn-arrow');
+    setStatus((realtime?'同期中':'ローカル')+'｜矢印モード：線を引くと終点に矢印が付きます');
   };
-
-  $('btn-circle').onclick = ()=>{
-    circleMode=true; circleCenter=null; map.getCanvas().style.cursor='crosshair';
-    alert('円モード：中心→半径の順に2回クリックで確定');
+  $('btn-circle').onclick  = ()=>{
+    circleMode=true; circleCenter=null; map.getCanvas().style.cursor='crosshair'; setActive('btn-circle');
+    setStatus((realtime?'同期中':'ローカル')+'｜円モード：中心→マウス移動→クリックで確定');
   };
+  $('btn-trash').onclick   = ()=>{ Draw.trash(); refreshStyleLayers(); syncToY(); };
 
-  function download(name, blob){
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob); a.download = name;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  /* ====== 作成/更新/削除：コメント・矢印属性・スタイルレイヤ更新・同期 ====== */
+  function askCommentAndSave(id){
+    const c = prompt('コメントを入力（任意）') || '';
+    Draw.setFeatureProperty(id, 'comment', c);
+    refreshStyleLayers(); syncToY();
   }
-  $('btn-save-geojson').onclick = ()=>{
-    const fc = Draw.getAll();
-    download('phnfield.geojson', new Blob([JSON.stringify(fc, null, 2)], {type:'application/geo+json'}));
+  map.on('draw.create', e=>{
+    const f=e.features[0];
+    if(arrowMode && f.geometry.type==='LineString'){ Draw.setFeatureProperty(f.id,'arrow',true); arrowMode=false; }
+    askCommentAndSave(f.id);
+    setActive('btn-select'); Draw.changeMode('simple_select');
+  });
+  map.on('draw.update', ()=>{ refreshStyleLayers(); syncToY(); });
+  map.on('draw.delete', ()=>{ refreshStyleLayers(); syncToY(); });
+
+  /* ====== スタイル適用（選択 / 全体） ====== */
+  function applyStyleToFeatures(features){
+    const s = $('#stroke').value, w = parseInt($('#strokeW').value,10);
+    const f = $('#fill').value, o = parseFloat($('#fillO').value);
+    features.forEach(feat=>{
+      Draw.setFeatureProperty(feat.id, 'stroke', s);
+      Draw.setFeatureProperty(feat.id, 'stroke-width', w);
+      if (feat.geometry.type==='Polygon'){ // 面だけ塗りを適用
+        Draw.setFeatureProperty(feat.id, 'fill', f);
+        Draw.setFeatureProperty(feat.id, 'fill-opacity', o);
+      }
+    });
+    refreshStyleLayers(); syncToY();
+  }
+  $('btn-apply-selected').onclick = ()=>{
+    const sel = Draw.getSelected().features;
+    if(sel.length===0){ alert('図形を選択してください'); return; }
+    applyStyleToFeatures(sel);
   };
-  $('btn-save-fgb').onclick = ()=>{
-    const fc = Draw.getAll();
-    const bytes = flatgeobuf.geojson.serialize(fc);
-    download('phnfield.fgb', new Blob([bytes], {type:'application/octet-stream'}));
-  };
-  $('btn-clear').onclick = ()=>{
-    if (!confirm('全て削除しますか？')) return;
-    Draw.deleteAll(); updateLabels(); updateArrowHeads(); syncToY();
-  };
-  $('btn-toggle-labels').onclick = ()=>{
-    showLabels = !showLabels; updateLabels();
-  };
-  $('btn-toggle-basemap').onclick = ()=>{
-    basemap = (basemap==='GSI')?'OSM':'GSI';
-    map.setLayoutProperty('basemap-gsi', 'visibility', basemap==='GSI'?'visible':'none');
-    map.setLayoutProperty('basemap-osm', 'visibility', basemap==='OSM'?'visible':'none');
+  $('btn-apply-all').onclick = ()=>{
+    applyStyleToFeatures(Draw.getAll().features);
   };
 
-  // 初期表示
-  setStatus(realtime ? `リアルタイム同期：接続中（room=${roomName}）` : 'ローカル編集（同期なし）');
+  /* ====== 保存 ====== */
+  function download(name, blob){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name;
+    document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }
+  $('btn-save-geojson').onclick = ()=>{ const fc=Draw.getAll(); download('phnfield.geojson', new Blob([JSON.stringify(fc,null,2)],{type:'application/geo+json'})); };
+  $('btn-save-fgb').onclick     = ()=>{ const bytes=flatgeobuf.geojson.serialize(Draw.getAll()); download('phnfield.fgb', new Blob([bytes],{type:'application/octet-stream'})); };
+  $('btn-clear').onclick        = ()=>{ if(confirm('全て削除しますか？')){ Draw.deleteAll(); refreshStyleLayers(); syncToY(); } };
+  $('btn-toggle-labels').onclick= ()=>{ showLabels=!showLabels; updateLabels(); };
+
+  /* ====== ベースマップ切替（標準→OSM→写真→標準…） ====== */
+  $('btn-toggle-basemap').onclick = ()=>{
+    basemap = (basemap==='GSI') ? 'OSM' : (basemap==='OSM' ? 'PHOTO' : 'GSI');
+    map.setLayoutProperty('basemap-gsi',   'visibility', basemap==='GSI'   ? 'visible' : 'none');
+    map.setLayoutProperty('basemap-osm',   'visibility', basemap==='OSM'   ? 'visible' : 'none');
+    map.setLayoutProperty('basemap-photo', 'visibility', basemap==='PHOTO' ? 'visible' : 'none');
+  };
+
+  /* ====== 初期状態 ====== */
+  setStatus('起動完了：'+( (typeof ywebrtc!=='undefined') ? 'リアルタイム同期（room='+roomName+'）' : 'ローカル編集') );
 })();
 </script>
 </body>
