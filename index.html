@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>PhnField</title>
+<title>完全版WebGIS</title>
 
 <!-- MapLibre -->
 <link href="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.css" rel="stylesheet">
@@ -16,13 +16,13 @@
 <!-- Draw Circle Plugin -->
 <script src="https://unpkg.com/mapbox-gl-draw-circle@1.0.3/dist/mapbox-gl-draw-circle.js"></script>
 
-<!-- FlatGeobuf for GeoJSON -->
+<!-- FlatGeobuf -->
 <script src="https://unpkg.com/flatgeobuf/dist/flatgeobuf-geojson.min.js"></script>
 
 <style>
   body, html, #map { margin:0; padding:0; height:100%; }
   .toolbar {
-    position:absolute; bottom:10px; right:10px;
+    position:absolute; top:60px; left:10px; /* 左上でナビと重ならない */
     background:white; padding:10px;
     border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.15);
     font-family: sans-serif; z-index:999;
@@ -55,7 +55,7 @@
 </div>
 
 <script>
-  // 背景スタイル設定
+  // 背景地図スタイル
   const styleOSM = {
     "version": 8,
     "sources": {
@@ -76,7 +76,7 @@
         "type": "raster",
         "tiles": ["https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png"],
         "tileSize": 256,
-        "attribution": "地理院タイル"
+        "attribution": "地理院タイル（<a href='https://maps.gsi.go.jp/development/ichiran.html'>出典</a>）"
       }
     },
     "layers": [{ "id": "gsi", "type": "raster", "source": "gsi" }]
@@ -84,45 +84,40 @@
 
   let currentStyle = "GSI";
 
+  // 地図作成
   const map = new maplibregl.Map({
     container: 'map',
     style: styleGSI,
-    center: [135.8049, 34.6851], 
-    zoom: 13
+    center: [135.8049, 34.6851], // 奈良
+    zoom: 13,
+    attributionControl: true
   });
   map.addControl(new maplibregl.NavigationControl(), 'top-right');
 
-  // 描画ツール（円を追加）
+  // 描画ツール（円追加）
   const Draw = new MapboxDraw({
     displayControlsDefault: false,
     controls: { point: true, line_string: true, polygon: true, trash: true },
-    modes: Object.assign({
-      draw_circle: MapboxDraw.modes.draw_circle
-    }, MapboxDraw.modes)
+    modes: Object.assign({ draw_circle: MapboxDraw.modes.draw_circle }, MapboxDraw.modes)
   });
   map.addControl(Draw, 'top-left');
 
-  // 矢印描画用のスタイルレイヤー
+  // 矢印用レイヤー
   map.on('load', () => {
-    map.addLayer({
-      id: 'arrow-layer',
-      type: 'symbol',
-      source: {
-        type: 'geojson',
-        data: Draw.getAll()
-      },
-      layout: {
-        'symbol-placement': 'line',
-        'symbol-spacing': 30,
-        'icon-image': 'arrow-icon',
-        'icon-size': 0.7
-      }
-    });
-
-    // 矢印アイコン
     map.loadImage('https://upload.wikimedia.org/wikipedia/commons/3/3c/Arrow_icon.png', (err, img) => {
       if (!err && !map.hasImage('arrow-icon')) {
         map.addImage('arrow-icon', img);
+        map.addLayer({
+          id: 'arrow-layer',
+          type: 'symbol',
+          source: { type: 'geojson', data: Draw.getAll() },
+          layout: {
+            'symbol-placement': 'line',
+            'symbol-spacing': 30,
+            'icon-image': 'arrow-icon',
+            'icon-size': 0.7
+          }
+        });
       }
     });
   });
@@ -130,34 +125,34 @@
   // コメント表示
   let showLabels = true;
   function updateLabels() {
-    const features = Draw.getAll().features;
-    // 既存ラベル削除
     document.querySelectorAll('.mapboxgl-marker').forEach(m => m.remove());
     if (!showLabels) return;
+    const features = Draw.getAll().features;
     features.forEach(f => {
       if (f.properties && f.properties.comment) {
         const el = document.createElement('div');
         el.className = 'comment-label';
         el.textContent = f.properties.comment;
-        new maplibregl.Marker({ element: el })
-          .setLngLat(f.geometry.type === 'Point' ? f.geometry.coordinates : f.geometry.coordinates[0][0])
-          .addTo(map);
+        let coord;
+        if (f.geometry.type === 'Point') coord = f.geometry.coordinates;
+        else if (f.geometry.type === 'LineString') coord = f.geometry.coordinates[0];
+        else coord = f.geometry.coordinates[0][0];
+        new maplibregl.Marker({ element: el }).setLngLat(coord).addTo(map);
       }
     });
   }
 
-  // 図形作成時にコメント入力
+  // 作成時コメント入力
   map.on('draw.create', e => {
     const id = e.features[0].id;
     const comment = prompt("コメントを入力してください（空欄可）");
     Draw.setFeatureProperty(id, 'comment', comment || '');
     updateLabels();
   });
-
   map.on('draw.update', updateLabels);
   map.on('draw.delete', updateLabels);
 
-  // ダウンロード関数
+  // ファイル保存関数
   function download(filename, blob) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
