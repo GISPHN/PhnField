@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>完全版WebGIS</title>
+<title>PhnField</title>
 
 <!-- MapLibre -->
 <link href="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.css" rel="stylesheet">
@@ -13,20 +13,25 @@
 <link href="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.css" rel="stylesheet">
 <script src="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.js"></script>
 
-<!-- Draw Circle Plugin -->
+<!-- Draw Circle -->
 <script src="https://unpkg.com/mapbox-gl-draw-circle@1.0.3/dist/mapbox-gl-draw-circle.js"></script>
 
 <!-- FlatGeobuf -->
 <script src="https://unpkg.com/flatgeobuf/dist/flatgeobuf-geojson.min.js"></script>
 
+<!-- Yjs + y-webrtc -->
+<script src="https://unpkg.com/yjs@13.6.18/dist/yjs.js"></script>
+<script src="https://unpkg.com/y-webrtc@10.6.6/dist/y-webrtc.js"></script>
+
 <style>
   body, html, #map { margin:0; padding:0; height:100%; }
   .toolbar {
-    position:absolute; top:60px; left:10px; /* 左上でナビと重ならない */
+    position:absolute; top:60px; left:10px;
     background:white; padding:10px;
     border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.15);
     font-family: sans-serif; z-index:999;
   }
+  .toolbar strong { display:block; margin-bottom:6px; }
   .toolbar button {
     display:block; width:180px; margin:4px 0;
     padding:8px; font-size:15px;
@@ -47,6 +52,7 @@
 
 <div id="map"></div>
 <div class="toolbar">
+  <strong>PhnField</strong>
   <button id="btn-save-geojson">GeoJSONで保存</button>
   <button id="btn-save-fgb">FlatGeobufで保存</button>
   <button id="btn-clear">全削除</button>
@@ -55,46 +61,44 @@
 </div>
 
 <script>
-  // 背景地図スタイル
+  const roomName = new URLSearchParams(location.search).get("room") || "default";
+
+  // 背景地図
   const styleOSM = {
-    "version": 8,
-    "sources": {
-      "osm": {
-        "type": "raster",
-        "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-        "tileSize": 256,
-        "attribution": "© OpenStreetMap contributors"
+    version: 8,
+    sources: {
+      osm: {
+        type: "raster",
+        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
+        tileSize: 256,
+        attribution: "© OpenStreetMap contributors"
       }
     },
-    "layers": [{ "id": "osm", "type": "raster", "source": "osm" }]
+    layers: [{ id: "osm", type: "raster", source: "osm" }]
   };
-
   const styleGSI = {
-    "version": 8,
-    "sources": {
-      "gsi": {
-        "type": "raster",
-        "tiles": ["https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png"],
-        "tileSize": 256,
-        "attribution": "地理院タイル（<a href='https://maps.gsi.go.jp/development/ichiran.html'>出典</a>）"
+    version: 8,
+    sources: {
+      gsi: {
+        type: "raster",
+        tiles: ["https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png"],
+        tileSize: 256,
+        attribution: "地理院タイル（<a href='https://maps.gsi.go.jp/development/ichiran.html'>出典</a>）"
       }
     },
-    "layers": [{ "id": "gsi", "type": "raster", "source": "gsi" }]
+    layers: [{ id: "gsi", type: "raster", source: "gsi" }]
   };
-
   let currentStyle = "GSI";
 
-  // 地図作成
   const map = new maplibregl.Map({
     container: 'map',
     style: styleGSI,
-    center: [135.8049, 34.6851], // 奈良
+    center: [135.8049, 34.6851],
     zoom: 13,
     attributionControl: true
   });
   map.addControl(new maplibregl.NavigationControl(), 'top-right');
 
-  // 描画ツール（円追加）
   const Draw = new MapboxDraw({
     displayControlsDefault: false,
     controls: { point: true, line_string: true, polygon: true, trash: true },
@@ -102,27 +106,33 @@
   });
   map.addControl(Draw, 'top-left');
 
-  // 矢印用レイヤー
-  map.on('load', () => {
-    map.loadImage('https://upload.wikimedia.org/wikipedia/commons/3/3c/Arrow_icon.png', (err, img) => {
-      if (!err && !map.hasImage('arrow-icon')) {
-        map.addImage('arrow-icon', img);
-        map.addLayer({
-          id: 'arrow-layer',
-          type: 'symbol',
-          source: { type: 'geojson', data: Draw.getAll() },
-          layout: {
-            'symbol-placement': 'line',
-            'symbol-spacing': 30,
-            'icon-image': 'arrow-icon',
-            'icon-size': 0.7
-          }
-        });
-      }
-    });
+  // ====== Yjs P2P同期（y-webrtc） ======
+  const ydoc = new Y.Doc();
+  const provider = new window.ywebrtc.WebrtcProvider("phnfield-" + roomName, ydoc, {
+    signaling: ['wss://signaling.yjs.dev'],
+    password: null,
+    awareness: new Y.awarenessProtocol.Awareness(ydoc)
   });
+  const yfeatures = ydoc.getArray("features");
 
-  // コメント表示
+  function syncFromY() {
+    const data = yfeatures.toArray();
+    Draw.deleteAll();
+    if (data.length > 0) {
+      Draw.add({ type: "FeatureCollection", features: data });
+    }
+    updateLabels();
+  }
+  function syncToY() {
+    const fs = Draw.getAll().features;
+    ydoc.transact(() => {
+      yfeatures.delete(0, yfeatures.length);
+      yfeatures.push(fs);
+    });
+  }
+  yfeatures.observe(syncFromY);
+
+  // ====== コメント表示 ======
   let showLabels = true;
   function updateLabels() {
     document.querySelectorAll('.mapboxgl-marker').forEach(m => m.remove());
@@ -142,17 +152,16 @@
     });
   }
 
-  // 作成時コメント入力
   map.on('draw.create', e => {
     const id = e.features[0].id;
     const comment = prompt("コメントを入力してください（空欄可）");
     Draw.setFeatureProperty(id, 'comment', comment || '');
-    updateLabels();
+    syncToY();
   });
-  map.on('draw.update', updateLabels);
-  map.on('draw.delete', updateLabels);
+  map.on('draw.update', syncToY);
+  map.on('draw.delete', syncToY);
 
-  // ファイル保存関数
+  // ====== 保存 ======
   function download(filename, blob) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
@@ -160,37 +169,33 @@
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
-
-  // GeoJSON保存
   document.getElementById('btn-save-geojson').onclick = () => {
     const fc = Draw.getAll();
-    download('data.geojson', new Blob([JSON.stringify(fc, null, 2)], {type: 'application/geo+json'}));
+    download('phnfield.geojson', new Blob([JSON.stringify(fc, null, 2)], {type: 'application/geo+json'}));
   };
-
-  // FlatGeobuf保存
   document.getElementById('btn-save-fgb').onclick = () => {
     const fc = Draw.getAll();
     const bytes = flatgeobuf.geojson.serialize(fc);
-    download('data.fgb', new Blob([bytes], {type:'application/octet-stream'}));
+    download('phnfield.fgb', new Blob([bytes], {type:'application/octet-stream'}));
   };
 
-  // 全削除
+  // ====== 全削除 ======
   document.getElementById('btn-clear').onclick = () => {
     if (confirm("全て削除しますか？")) {
       Draw.deleteAll();
-      updateLabels();
+      syncToY();
     }
   };
 
-  // コメント表示切替
+  // ====== コメント表示切替 ======
   document.getElementById('btn-toggle-labels').onclick = () => {
     showLabels = !showLabels;
     updateLabels();
   };
 
-  // 地図切替
+  // ====== 地図切替 ======
   document.getElementById('btn-toggle-basemap').onclick = () => {
     currentStyle = currentStyle === "GSI" ? "OSM" : "GSI";
     map.setStyle(currentStyle === "GSI" ? styleGSI : styleOSM);
