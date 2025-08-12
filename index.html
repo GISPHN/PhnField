@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>オープンソースWebGIS</title>
+
+<!-- MapLibre -->
+<link href="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.css" rel="stylesheet">
+<script src="https://unpkg.com/maplibre-gl@3.6.1/dist/maplibre-gl.js"></script>
+
+<!-- maplibre-gl-draw -->
+<link href="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.css" rel="stylesheet">
+<script src="https://unpkg.com/@mapbox/mapbox-gl-draw@1.4.3/dist/mapbox-gl-draw.js"></script>
+
+<!-- FlatGeobuf for GeoJSON -->
+<script src="https://unpkg.com/flatgeobuf/dist/flatgeobuf-geojson.min.js"></script>
+
+<style>
+  body, html, #map { margin:0; padding:0; height:100%; }
+  .toolbar {
+    position:absolute; top:10px; left:10px;
+    background:white; padding:10px;
+    border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.15);
+    font-family: sans-serif; z-index:999;
+  }
+  .toolbar button {
+    display:block; width:160px; margin:4px 0;
+    padding:8px; font-size:16px;
+    border:1px solid #ccc; border-radius:6px;
+    background:#f8f8f8;
+  }
+  .toolbar button:hover { background:#e8e8e8; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+<div class="toolbar">
+  <button id="btn-save-geojson">GeoJSONで保存</button>
+  <button id="btn-save-fgb">FlatGeobufで保存</button>
+  <button id="btn-clear">全削除</button>
+</div>
+
+<script>
+  // === 1) 地図を表示（地理院タイル） ===
+  const map = new maplibregl.Map({
+    container: 'map',
+    style: {
+      "version": 8,
+      "sources": {
+        "gsi": {
+          "type": "raster",
+          "tiles": [
+            "https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png"
+          ],
+          "tileSize": 256,
+          "attribution": "地理院タイル"
+        }
+      },
+      "layers": [{ "id": "gsi", "type": "raster", "source": "gsi" }]
+    },
+    center: [135.8049, 34.6851], // 奈良中心
+    zoom: 13
+  });
+  map.addControl(new maplibregl.NavigationControl(), 'top-right');
+
+  // === 2) 描画ツール追加 ===
+  const draw = new MapboxDraw({
+    displayControlsDefault: false,
+    controls: {
+      point: true,
+      line_string: true,
+      polygon: true,
+      trash: true
+    }
+  });
+  map.addControl(draw, 'top-left');
+
+  // === 3) ユーティリティ関数（ダウンロード） ===
+  function download(filename, blob) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  }
+
+  // === 4) GeoJSONで保存 ===
+  document.getElementById('btn-save-geojson').onclick = () => {
+    const fc = draw.getAll(); // FeatureCollection
+    const blob = new Blob(
+      [JSON.stringify(fc, null, 2)],
+      {type: 'application/geo+json'}
+    );
+    download('data.geojson', blob);
+  };
+
+  // === 5) FlatGeobufで保存 ===
+  document.getElementById('btn-save-fgb').onclick = () => {
+    const fc = draw.getAll();
+    const bytes = flatgeobuf.geojson.serialize(fc); // Uint8Array
+    const blob = new Blob([bytes], {type: 'application/octet-stream'});
+    download('data.fgb', blob);
+  };
+
+  // === 6) 全削除 ===
+  document.getElementById('btn-clear').onclick = () => {
+    if (confirm("すべての描画を削除しますか？")) {
+      draw.deleteAll();
+    }
+  };
+</script>
+
+</body>
+</html>
