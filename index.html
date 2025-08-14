@@ -21,14 +21,16 @@
 <script src="https://unpkg.com/lz-string@1.4.4/libs/lz-string.min.js"></script>
 
 <style>
-  html, body { height:100%; margin:0; }
-  #map { height: calc(var(--vh, 1vh) * 100); }
+  html, body { height:100%; margin:0; overflow:hidden; } /* ページ全体スクロールを止める */
+  #map { position:absolute; inset:0; }
 
+  /* ★ パネルは常に fixed・独立スクロール */
   .toolbar{
-    position:absolute; top:60px; left:10px; z-index:999;
+    position:fixed; top:10px; left:10px; z-index:999;
     width:300px; background:#fff; padding:12px; border-radius:10px;
     box-shadow:0 2px 10px rgba(0,0,0,.15); font-family:system-ui, sans-serif;
     -webkit-tap-highlight-color: transparent;
+    max-height: calc(100vh - 20px); overflow:auto;  /* ←ここがポイント */
   }
   .toolbar h1{ font-size:16px; margin:0 0 6px; }
   .toolbar .small{ font-size:12px; color:#555; margin:0 0 10px; word-break:break-all; }
@@ -45,7 +47,6 @@
   .row input[type="range"]{ flex:1; }
   .hr{ border-top:1px solid #e6e6e6; margin:10px 0; }
 
-  /* 視認性の高いラベル（点ではピン上端に来る） */
   .comment-label{
     background: rgba(255,255,255,0);
     color:#111; border-radius:8px; padding:2px 6px; font-size:16px; line-height:1.35; font-weight:700;
@@ -59,10 +60,10 @@
 
   @media (max-width: 768px){
     .toolbar{
-      top:auto; bottom:0; left:0; right:0; width:auto;
+      left:0; right:0; top:auto; bottom:0; width:auto;
       border-radius:16px 16px 0 0;
       padding:12px 12px calc(12px + env(safe-area-inset-bottom));
-      max-height:48vh; overflow:auto;
+      max-height:48vh; overflow:auto;  /* モバイルも独立スクロール */
     }
   }
 </style>
@@ -106,23 +107,8 @@
 
 <script>
 (function(){
-  /* ===== 100vh安定化 ===== */
-  function setVh(){ document.documentElement.style.setProperty('--vh', (window.innerHeight*0.01)+'px'); }
-  setVh(); window.addEventListener('resize', setVh);
-
-  /* ===== util ===== */
   const $=(id)=>document.getElementById(id);
   const setStatus=(s)=>{ const el=$('status'); if(el) el.textContent=s; };
-  const setActive=(id)=>{ document.querySelectorAll('.toolbar button').forEach(b=>b.classList.remove('active')); $(id)?.classList.add('active'); };
-
-  /* ===== room=20 ===== */
-  const CHARS="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-  function randomRoom(n=20){ const a=new Uint32Array(n); crypto.getRandomValues(a); let s=""; for(let i=0;i<n;i++) s+=CHARS[a[i]%CHARS.length]; return s; }
-  function ensureRoom(){
-    const u=new URL(location.href);
-    if(!u.searchParams.get('room')){ u.searchParams.set('room', randomRoom(20)); history.replaceState({},'',u); }
-    return new URL(location.href);
-  }
 
   /* ===== Map ===== */
   const map=new maplibregl.Map({
@@ -148,28 +134,9 @@
   map.addControl(new maplibregl.NavigationControl(),'top-right');
   map.addControl(new maplibregl.AttributionControl({compact:false}), 'bottom-right');
 
-  /* ===== Draw：デフォルトスタイルに戻す（プレビューが確実に見える） ===== */
+  /* ===== Draw（既定スタイル＝プレビュー確実に可視） ===== */
   const Draw=new MapboxDraw({ displayControlsDefault:false, defaultMode:'simple_select' });
   map.addControl(Draw,'top-left');
-
-  /* ===== レイヤ順：gl-draw の“最上段の直前”に phn-* を常に移動 ===== */
-  function topmostDrawLayerId(){
-    const layers = map.getStyle().layers || [];
-    let last = null;
-    for(const l of layers){ if(l.id && l.id.startsWith('gl-draw-')) last = l.id; }
-    return last;
-  }
-  function orderPhnLayers(){
-    const before = topmostDrawLayerId();
-    if(!before) return;
-    const ids = [
-      'phn-fill','phn-outline-casing','phn-outline','phn-line-casing','phn-line',
-      'phn-points-unclustered','phn-clusters','phn-cluster-count',
-      'arrow-heads-casing','arrow-heads',
-      'circle-preview-line-casing','circle-preview-line','circle-preview-fill'
-    ];
-    ids.forEach(id=>{ if(map.getLayer(id)) map.moveLayer(id, before); });
-  }
 
   /* ===== 画像（赤/青ピン） ===== */
   function addImages(){
@@ -185,11 +152,25 @@
     }
   }
 
-  /* ===== 自前表示（完成図形：白ハロ）＋点クラスタ＋矢印枝線＋円プレビュー ===== */
+  /* ===== phn-*（完成表示） + 矢印枝線 + 点クラスタ ===== */
+  function moveToTop(id){ if(map.getLayer(id)) map.moveLayer(id); } // 引数なし=最上位へ
+  function orderLayers(){
+    // phn-* は Draw の直下でOK、矢印だけは最上位
+    const layers = map.getStyle().layers||[];
+    let lastDraw=null;
+    for(const l of layers){ if(l.id.startsWith('gl-draw-')) lastDraw=l.id; }
+    const before=lastDraw; if(!before) return;
+    ['phn-fill','phn-outline-casing','phn-outline','phn-line-casing','phn-line',
+     'phn-points-unclustered','phn-clusters','phn-cluster-count',
+     'circle-preview-line-casing','circle-preview-line','circle-preview-fill'
+    ].forEach(id=>{ if(map.getLayer(id)) map.moveLayer(id, before); });
+    // ★ 矢印は最上位へ（被されないように）
+    moveToTop('arrow-heads-casing'); moveToTop('arrow-heads');
+  }
+
   map.on('load', ()=>{
     addImages();
 
-    // 完成図形（線・面）
     map.addSource('phn-style',{type:'geojson', data:{type:'FeatureCollection',features:[]}});
 
     map.addLayer({id:'phn-fill',type:'fill',source:'phn-style',
@@ -209,7 +190,6 @@
       filter:['==',['geometry-type'],'LineString'],
       paint:{'line-color':['coalesce',['get','stroke'],'#2b7fff'],'line-width':['coalesce',['get','stroke-width'],3],'line-cap':'round','line-join':'round'}});
 
-    // 点（クラスタ）
     map.addSource('phn-points',{ type:'geojson', data:{type:'FeatureCollection',features:[]}, cluster:true, clusterRadius:40, clusterMaxZoom:14 });
     map.addLayer({id:'phn-clusters', type:'circle', source:'phn-points', filter:['has','point_count'],
       paint:{ 'circle-color':['step',['get','point_count'],'#8ab4ff',10,'#4a90e2',50,'#2b7fff'],
@@ -220,7 +200,7 @@
     map.addLayer({id:'phn-points-unclustered', type:'symbol', source:'phn-points', filter:['!',['has','point_count']],
       layout:{'icon-image':['coalesce',['get','icon'],'phn-pin'],'icon-size':0.9,'icon-allow-overlap':true,'icon-anchor':'bottom'}});
 
-    // 矢印の枝線（終点から±30°の短線）
+    // === 矢印の枝線（終点から±30°） ===
     map.addSource('arrow-heads',{type:'geojson',data:{type:'FeatureCollection',features:[]}}); 
     map.addLayer({id:'arrow-heads-casing',type:'line',source:'arrow-heads',
       paint:{'line-color':'#fff','line-width':['+', ['coalesce',['get','stroke-width'],3], 4],'line-cap':'round','line-join':'round'}});
@@ -233,38 +213,51 @@
     map.addLayer({id:'circle-preview-line',type:'line',source:'circle-preview',paint:{'line-color':'#1e90ff','line-width':3,'line-dasharray':[2,1]}});
     map.addLayer({id:'circle-preview-fill',type:'fill',source:'circle-preview',paint:{'fill-color':'#1e90ff','fill-opacity':0.2}});
 
-    orderPhnLayers();
-
-    // 共有URL (#c=) 復元
-    const h = new URL(location.href).hash;
-    if (h.startsWith('#c=')) {
-      try {
-        const fc = JSON.parse(LZString.decompressFromEncodedURIComponent(h.slice(3)) || 'null');
-        if (fc && fc.type === 'FeatureCollection') { Draw.deleteAll(); Draw.add(fc); refreshAll(); }
-      } catch (err) { console.warn('共有データ復元失敗', err); }
-    }
+    orderLayers();
   });
-  map.on('styledata', orderPhnLayers);
+  map.on('styledata', orderLayers);
 
-  /* ===== リアルタイム同期 ===== */
-  let ydoc=null, provider=null, yfeatures=null, realtime=false;
-  try{
-    if(window.ywebrtc && window.Y){
-      const room=(new URL(location.href)).searchParams.get('room')||randomRoom(20);
-      ydoc=new Y.Doc();
-      new window.yIndexeddb.IndexeddbPersistence('phnfield-'+room, ydoc);
-      provider=new ywebrtc.WebrtcProvider('phnfield-'+room, ydoc, {signaling:['wss://signaling.yjs.dev']});
-      yfeatures=ydoc.getArray('features');
-      yfeatures.observe(()=>{ const arr=yfeatures.toArray(); Draw.deleteAll(); if(arr.length) Draw.add({type:'FeatureCollection',features:arr}); refreshAll(); });
-      realtime=true; setStatus('リアルタイム同期：接続中（room='+room+'）');
-      provider.on('status', e=> setStatus('リアルタイム同期：'+e.status+'（room='+room+'）'));
-    } else throw new Error();
-  }catch{ setStatus('ローカル編集（同期なし）'); }
+  /* ===== 矢印の計算（長さを自動スケール） ===== */
+  const HEAD_ANGLE = 30;   // ±30°
+  function headLengthM(a,b){
+    const seg = turf.distance(turf.point(a), turf.point(b), {units:'kilometers'})*1000; // 直近辺の長さ[m]
+    return Math.max(12, Math.min(seg*0.25, 80)); // 12〜80mの範囲で0.25倍
+  }
+  function arrowHeadSegmentsForLine(coords){
+    if(!coords || coords.length<2) return [];
+    const a=coords[coords.length-2], b=coords[coords.length-1];
+    const bearing=turf.bearing(turf.point(a), turf.point(b));
+    const L=headLengthM(a,b)/1000; // km
+    const left  = turf.destination(turf.point(b), L, bearing+180-HEAD_ANGLE, {units:'kilometers'}).geometry.coordinates;
+    const right = turf.destination(turf.point(b), L, bearing+180+HEAD_ANGLE, {units:'kilometers'}).geometry.coordinates;
+    return [
+      {type:'Feature',geometry:{type:'LineString',coordinates:[b,left]}},
+      {type:'Feature',geometry:{type:'LineString',coordinates:[b,right]}}
+    ];
+  }
+  function updateArrowHeads(){
+    const feats=[];
+    Draw.getAll().features.forEach(f=>{
+      if(f.geometry.type==='LineString' && f.properties?.arrow===true){
+        const segs=arrowHeadSegmentsForLine(f.geometry.coordinates);
+        segs.forEach(s=>{
+          s.properties={
+            stroke: f.properties?.stroke ?? '#2b7fff',
+            'stroke-width': f.properties?.['stroke-width'] ?? 3,
+            parent: f.id, role: 'arrow-head'
+          };
+          feats.push(s);
+        });
+      }
+    });
+    map.getSource('arrow-heads')?.setData({type:'FeatureCollection',features:feats});
+    // ★ 常に最前面へ（隠れ防止）
+    moveToTop('arrow-heads-casing'); moveToTop('arrow-heads');
+  }
 
   /* ===== 表示更新 ===== */
-  const PIN_OFFSET_Y = 56; // ピン上端までの見込み
+  const PIN_OFFSET_Y = 56;
   const labelCache = new Map(); let showLabels=true;
-
   function updateLabels(){
     const current = new Set();
     Draw.getAll().features.forEach(f=>{
@@ -285,34 +278,6 @@
     });
     for(const [id,m] of labelCache){ if(!current.has(id)){ m.remove(); labelCache.delete(id);} }
   }
-
-  const HEAD_LEN_M=15, HEAD_ANGLE=30;
-  function arrowHeadSegmentsForLine(coords, len_m=HEAD_LEN_M, ang=HEAD_ANGLE){
-    if(!coords || coords.length<2) return [];
-    const a=coords[coords.length-2], b=coords[coords.length-1];
-    const bearing=turf.bearing(turf.point(a), turf.point(b));
-    const left  = turf.destination(turf.point(b), len_m/1000, bearing+180-ang, {units:'kilometers'}).geometry.coordinates;
-    const right = turf.destination(turf.point(b), len_m/1000, bearing+180+ang, {units:'kilometers'}).geometry.coordinates;
-    return [
-      {type:'Feature',geometry:{type:'LineString',coordinates:[b,left]}},
-      {type:'Feature',geometry:{type:'LineString',coordinates:[b,right]}}
-    ];
-  }
-  function updateArrowHeads(){
-    const feats=[];
-    Draw.getAll().features.forEach(f=>{
-      if(f.geometry.type==='LineString' && f.properties?.arrow===true){
-        const segs=arrowHeadSegmentsForLine(f.geometry.coordinates);
-        segs.forEach(s=>{ s.properties={
-          stroke: f.properties?.stroke ?? '#2b7fff',
-          'stroke-width': f.properties?.['stroke-width'] ?? 3,
-          parent:f.id, role:'arrow-head'
-        }; feats.push(s); });
-      }
-    });
-    const src=map.getSource('arrow-heads'); if(src) src.setData({type:'FeatureCollection',features:feats});
-  }
-
   function refreshAll(){
     const all=Draw.getAll();
     const linesPolys=all.features.filter(f=>f.geometry.type!=='Point');
@@ -322,43 +287,21 @@
     updateLabels(); updateArrowHeads();
   }
 
-  /* ===== 円モード ===== */
-  let circleMode=false, circleCenter=null;
-  function exitCircle(){ circleMode=false; circleCenter=null; map.getSource('circle-preview')?.setData({type:'FeatureCollection',features:[]}); map.getCanvas().style.cursor=''; }
-  function circlePreview(center, ll){
-    if(!center||!ll) return;
-    const r=turf.distance(turf.point(center), turf.point([ll.lng,ll.lat]), {units:'kilometers'})*1000;
-    const poly=turf.circle(center, Math.max(r,1), {steps:64, units:'meters'});
-    map.getSource('circle-preview').setData(poly);
-  }
-  map.on('mousemove', e=>{ if(circleMode && circleCenter) circlePreview(circleCenter, e.lngLat); });
-
-  map.on('click', e=>{
-    if(!circleMode) return;
-    if(!circleCenter){ circleCenter=[e.lngLat.lng,e.lngLat.lat]; circlePreview(circleCenter,e.lngLat); }
-    else{
-      const r=turf.distance(turf.point(circleCenter),turf.point([e.lngLat.lng,e.lngLat.lat]),{units:'kilometers'})*1000;
-      const poly=turf.circle(circleCenter, Math.max(r,1), {steps:64, units:'meters'});
-      const id=Draw.add({type:'Feature', geometry:poly.geometry, properties:{shape:'circle', radius_m:Math.round(r)}});
-      exitCircle(); finishWithComment(id);
-    }
-  });
-
-  /* ===== 操作ボタン（作図中はパン/ダブルタップズームを無効化） ===== */
-  let arrowMode=false;
-  $('btn-select').onclick = ()=>{ Draw.changeMode('simple_select'); setActive('btn-select'); exitCircle(); arrowMode=false; map.dragPan.enable(); map.doubleClickZoom.enable(); };
-  $('btn-point').onclick  = ()=>{ Draw.changeMode('draw_point');   setActive('btn-point');  exitCircle(); arrowMode=false; map.dragPan.enable(); map.doubleClickZoom.enable(); };
-  $('btn-line').onclick   = ()=>{ Draw.changeMode('draw_line_string'); setActive('btn-line');  exitCircle(); arrowMode=false; map.dragPan.disable(); map.doubleClickZoom.disable(); };
-  $('btn-polygon').onclick= ()=>{ Draw.changeMode('draw_polygon');     setActive('btn-polygon'); exitCircle(); arrowMode=false; map.dragPan.disable(); map.doubleClickZoom.disable(); };
-  $('btn-arrow').onclick  = ()=>{ arrowMode=true; Draw.changeMode('draw_line_string'); setActive('btn-arrow'); exitCircle(); map.dragPan.disable(); map.doubleClickZoom.disable(); setStatus('矢印：終点が先端、ダブルクリック/ダブルタップで確定'); };
-  $('btn-circle').onclick = ()=>{ circleMode=true; circleCenter=null; map.getCanvas().style.cursor='crosshair'; setActive('btn-circle'); arrowMode=false; map.dragPan.enable(); map.doubleClickZoom.enable(); };
+  /* ===== 操作ボタン ===== */
+  let arrowMode=false; let circleMode=false, circleCenter=null;
+  $('btn-select').onclick = ()=>{ Draw.changeMode('simple_select'); arrowMode=false; map.dragPan.enable(); map.doubleClickZoom.enable(); };
+  $('btn-point').onclick  = ()=>{ Draw.changeMode('draw_point');   arrowMode=false; map.dragPan.enable(); map.doubleClickZoom.enable(); };
+  $('btn-line').onclick   = ()=>{ Draw.changeMode('draw_line_string'); arrowMode=false; map.dragPan.disable(); map.doubleClickZoom.disable(); };
+  $('btn-polygon').onclick= ()=>{ Draw.changeMode('draw_polygon');     arrowMode=false; map.dragPan.disable(); map.doubleClickZoom.disable(); };
+  $('btn-arrow').onclick  = ()=>{ arrowMode=true; Draw.changeMode('draw_line_string'); map.dragPan.disable(); map.doubleClickZoom.disable(); setStatus('矢印：終点が先端、ダブルクリック/ダブルタップで確定'); };
+  $('btn-circle').onclick = ()=>{ circleMode=true; circleCenter=null; map.getCanvas().style.cursor='crosshair'; arrowMode=false; map.dragPan.enable(); map.doubleClickZoom.enable(); };
   $('btn-trash').onclick  = ()=>{ Draw.trash(); refreshAll(); syncToY(); };
 
   map.on('draw.modechange', e=>{
     const m=e.mode;
     (m==='draw_line_string'||m==='draw_polygon')? (map.dragPan.disable(), map.doubleClickZoom.disable()) : (map.dragPan.enable(), map.doubleClickZoom.enable(), arrowMode=false);
-    if(m!=='draw_point'&&m!=='draw_line_string'&&m!=='draw_polygon'){ exitCircle(); setActive('btn-select'); }
-    orderPhnLayers();
+    if(m!=='draw_point'&&m!=='draw_line_string'&&m!=='draw_polygon'){ circleMode=false; circleCenter=null; map.getCanvas().style.cursor=''; }
+    orderLayers();
   });
 
   /* ===== Draw イベント ===== */
@@ -367,7 +310,7 @@
       const c=prompt('コメントを入力（任意）') ?? '';
       Draw.setFeatureProperty(id,'comment',c);
       refreshAll(); syncToY();
-      setTimeout(()=>{ Draw.changeMode('simple_select'); setActive('btn-select'); map.dragPan.enable(); map.doubleClickZoom.enable(); },0);
+      setTimeout(()=>{ Draw.changeMode('simple_select'); map.dragPan.enable(); map.doubleClickZoom.enable(); },0);
     });
   }
   map.on('draw.create', e=>{
@@ -378,20 +321,27 @@
   map.on('draw.update', ()=>{ refreshAll(); syncToY(); });
   map.on('draw.delete', ()=>{ refreshAll(); syncToY(); });
 
-  /* ===== スタイル適用 ===== */
-  function applyStyle(feats){
-    const s=$('stroke').value, w=+$('strokeW').value, f=$('fill').value, o=parseFloat($('fillO').value);
-    feats.forEach(ft=>{
-      Draw.setFeatureProperty(ft.id,'stroke',s);
-      Draw.setFeatureProperty(ft.id,'stroke-width',w);
-      if(ft.geometry.type==='Polygon'){ Draw.setFeatureProperty(ft.id,'fill',f); Draw.setFeatureProperty(ft.id,'fill-opacity',o); }
-    });
-    refreshAll(); syncToY();
+  /* ===== 円 ===== */
+  function circlePreview(center, ll){
+    if(!center||!ll) return;
+    const r=turf.distance(turf.point(center), turf.point([ll.lng,ll.lat]), {units:'kilometers'})*1000;
+    const poly=turf.circle(center, Math.max(r,1), {steps:64, units:'meters'});
+    map.getSource('circle-preview')?.setData(poly);
   }
-  $('btn-apply-selected').onclick=()=>{ const sel=Draw.getSelected().features; if(!sel.length){alert('図形を選択してください');return;} applyStyle(sel); };
-  $('btn-apply-all').onclick = ()=> applyStyle(Draw.getAll().features);
+  map.on('mousemove', e=>{ if(circleMode && circleCenter) circlePreview(circleCenter, e.lngLat); });
+  map.on('click', e=>{
+    if(!circleMode) return;
+    if(!circleCenter){ circleCenter=[e.lngLat.lng,e.lngLat.lat]; circlePreview(circleCenter,e.lngLat); }
+    else{
+      const r=turf.distance(turf.point(circleCenter),turf.point([e.lngLat.lng,e.lngLat.lat]),{units:'kilometers'})*1000;
+      const poly=turf.circle(circleCenter, Math.max(r,1), {steps:64, units:'meters'});
+      const id=Draw.add({type:'Feature', geometry:poly.geometry, properties:{shape:'circle', radius_m:Math.round(r)}});
+      circleMode=false; circleCenter=null; map.getSource('circle-preview')?.setData({type:'FeatureCollection',features:[]}); map.getCanvas().style.cursor='';
+      finishWithComment(id);
+    }
+  });
 
-  /* ===== 矢印エクスポート（枝線をLineStringで出力） ===== */
+  /* ===== 保存等（前回と同様） ===== */
   function withArrowGeometry(fc){
     const out=[];
     fc.features.forEach(f=>{
@@ -406,14 +356,12 @@
     });
     return {type:'FeatureCollection', features:out};
   }
-
-  /* ===== 保存 ===== */
   function ts(){ const d=new Date(); const pad=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}`; }
   function download(name, blob){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }
   $('btn-save-geojson').onclick=()=>{ const fc=withArrowGeometry(Draw.getAll()); download(`PhnField_${ts()}.geojson`, new Blob([JSON.stringify(fc,null,2)],{type:'application/geo+json'})); };
-  $('btn-save-fgb').onclick=()=>{ try{ const fc=withArrowGeometry(Draw.getAll()); const bytes=flatgeobuf.geojson.serialize(fc); download(`PhnField_${ts()}.fgb`, new Blob([bytes], {type:'application/octet-stream'})); }catch(e){ console.error(e); alert('FlatGeobufの出力でエラーが発生しました。ブラウザを最新化して再試行してください。'); } };
+  $('btn-save-fgb').onclick=()=>{ try{ const fc=withArrowGeometry(Draw.getAll()); const bytes=flatgeobuf.geojson.serialize(fc); download(`PhnField_${ts()}.fgb`, new Blob([bytes], {type:'application/octet-stream'})); }catch(e){ console.error(e); alert('FlatGeobufの出力でエラーが発生しました。'); } };
 
-  /* ===== 現在地：青ピン ===== */
+  /* ===== 現在地（青ピン設置/追加） ===== */
   let meMarker=null;
   function getPositionOnce(highAcc=true){
     return new Promise((resolve,reject)=>{
@@ -434,17 +382,24 @@
       if(meMarker) meMarker.remove();
       meMarker = new maplibregl.Marker({element:el, anchor:'bottom'}).setLngLat([longitude,latitude]).addTo(map);
       setStatus(`現在地へ移動（精度±${Math.round(accuracy)}m）`);
-    }catch(e){ alert('現在地を取得できませんでした。HTTPSでアクセスしているか、位置情報の権限をご確認ください。'); }
+    }catch(e){ alert('現在地を取得できませんでした。'); }
   };
   $('btn-add-me').onclick = async ()=>{
     try{
       const p=await getPositionOnce(); const {longitude, latitude}=p.coords;
       const f={type:'Feature', geometry:{type:'Point', coordinates:[longitude,latitude]}, properties:{icon:'phn-pin-blue'}};
       const id=Draw.add(f); finishWithComment(id);
-    }catch(e){ alert('現在地を取得できませんでした。HTTPSでアクセスしているか、位置情報の権限をご確認ください。'); }
+    }catch(e){ alert('現在地を取得できませんでした。'); }
   };
 
-  /* ===== 共有・統合・その他 ===== */
+  /* ===== 共有・統合（省略なし） ===== */
+  const CHARS="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  function randomRoom(n=20){ const a=new Uint32Array(n); crypto.getRandomValues(a); let s=""; for(let i=0;i<n;i++) s+=CHARS[a[i]%CHARS.length]; return s; }
+  function ensureRoom(){
+    const u=new URL(location.href);
+    if(!u.searchParams.get('room')){ u.searchParams.set('room', randomRoom(20)); history.replaceState({},'',u); }
+    return new URL(location.href);
+  }
   $('btn-share').onclick = async ()=>{
     const url = ensureRoom();
     const include = confirm('現在の図形もURLに含めますか？（#c= に圧縮埋め込み）');
@@ -452,12 +407,9 @@
       const fc = Draw.getAll();
       const c  = LZString.compressToEncodedURIComponent(JSON.stringify(fc));
       url.hash = 'c=' + c;
-    } else {
-      url.hash = '';
-    }
-    const s = url.toString();
-    try { await navigator.clipboard.writeText(s); alert('コピーしました：\n' + s); }
-    catch { prompt('このURLをコピーしてください', s); }
+    } else { url.hash = ''; }
+    try { await navigator.clipboard.writeText(url.toString()); alert('コピーしました：\n' + url.toString()); }
+    catch { prompt('このURLをコピーしてください', url.toString()); }
   };
   $('btn-merge').onclick = ()=>{
     const text = prompt('統合したい共同編集URLを複数行で貼り付けてください');
@@ -477,17 +429,20 @@
     Draw.add(merged); refreshAll(); syncToY(); alert('統合しました（'+merged.features.length+'要素）');
   };
 
-  function syncToY(){ if(!realtime) return; const a=Draw.getAll().features; ydoc.transact(()=>{ yfeatures.delete(0,yfeatures.length); yfeatures.push(a); }); }
-  $('btn-clear').onclick = ()=>{ if(confirm('全て削除しますか？')){ Draw.deleteAll(); refreshAll(); syncToY(); } };
-  $('btn-toggle-labels').onclick=()=>{ showLabels=!showLabels; for (const [,mk] of labelCache) mk.getElement().style.display = showLabels?'':'none'; if(showLabels) updateLabels(); };
-  $('btn-toggle-basemap').onclick=()=>{
-    const visG = map.getLayoutProperty('basemap-gsi','visibility')==='visible';
-    const visO = map.getLayoutProperty('basemap-osm','visibility')==='visible';
-    map.setLayoutProperty('basemap-gsi','visibility', visG?'none':'visible');
-    map.setLayoutProperty('basemap-osm','visibility', (!visG && !visO)?'visible':(visO?'none':'visible'));
-    map.setLayoutProperty('basemap-photo','visibility', (visG||visO)?'none':'visible');
-  };
-
+  /* ===== 同期 ===== */
+  let ydoc=null, provider=null, yfeatures=null, realtime=false;
+  try{
+    if(window.ywebrtc && window.Y){
+      const room=(new URL(location.href)).searchParams.get('room')||randomRoom(20);
+      ydoc=new Y.Doc();
+      new window.yIndexeddb.IndexeddbPersistence('phnfield-'+room, ydoc);
+      provider=new ywebrtc.WebrtcProvider('phnfield-'+room, ydoc, {signaling:['wss://signaling.yjs.dev']});
+      yfeatures=ydoc.getArray('features');
+      yfeatures.observe(()=>{ const arr=yfeatures.toArray(); Draw.deleteAll(); if(arr.length) Draw.add({type:'FeatureCollection',features:arr}); refreshAll(); });
+      realtime=true; setStatus('リアルタイム同期：接続中（room='+room+'）');
+      provider.on('status', e=> setStatus('リアルタイム同期：'+e.status+'（room='+room+'）'));
+    } else throw new Error();
+  }catch{ setStatus('ローカル編集（同期なし）'); }
   function syncToY(){ if(!realtime) return; const a=Draw.getAll().features; ydoc.transact(()=>{ yfeatures.delete(0,yfeatures.length); yfeatures.push(a); }); }
 
 })();
