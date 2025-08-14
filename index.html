@@ -13,6 +13,7 @@
 
 <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 <script src="https://unpkg.com/flatgeobuf/dist/flatgeobuf-geojson.min.js"></script>
+
 <script src="https://unpkg.com/yjs@13.6.18/dist/yjs.js"></script>
 <script src="https://unpkg.com/y-webrtc@10.6.9/dist/y-webrtc.min.js"></script>
 <script src="https://unpkg.com/y-indexeddb@1.3.9/dist/y-indexeddb.js"></script>
@@ -21,6 +22,7 @@
   html, body { height:100%; margin:0; overflow:hidden; }
   #map { position:absolute; inset:0; }
 
+  /* 左パネル：固定＋独立スクロール */
   .toolbar{
     position:fixed; top:10px; left:10px; z-index:999;
     width:320px; background:#fff; padding:12px; border-radius:10px;
@@ -40,6 +42,7 @@
   .row input[type="range"], .row input[type="text"], .row input[type="password"]{ flex:1; padding:8px; }
   .hr{ border-top:1px solid #e6e6e6; margin:10px 0; }
 
+  /* 視認性の高いラベル（白ハロ） */
   .comment-label{
     background: transparent; color:#111; font-weight:700; font-size:16px; padding:2px 6px; border-radius:8px;
     text-shadow:
@@ -71,20 +74,16 @@
 
   <button id="btn-share">共同編集URLをコピー（room=20）</button>
 
-  <details id="gh-sec">
-    <summary>GitHub保存（暗号化）</summary>
+  <details id="gh-sec" open>
+    <summary>GitHub保存（暗号化・管理者だけ書込）</summary>
     <div class="row"><label>Owner</label><input id="gh-owner" type="text" placeholder="your-name"></div>
     <div class="row"><label>Repo</label><input id="gh-repo" type="text" placeholder="your-repo"></div>
     <div class="row"><label>Branch</label><input id="gh-branch" type="text" value="main"></div>
-    <div class="row"><label>Path</label><input id="gh-path" type="text" readonly></div>
-    <div class="row"><label>PAT（書込専用）</label><input id="gh-token" type="password" placeholder="ghp_...（ブラウザ保存）"></div>
-    <div class="row">
-      <button id="btn-key">秘密鍵をURLに付与（#k=）</button>
-      <button id="btn-gh-save">手動保存</button>
-      <button id="btn-gh-load">手動読み込み</button>
-    </div>
+    <div class="row"><label>保存パス</label><input id="gh-path" type="text" readonly></div>
+    <div class="row"><label>PAT（管理者のみ）</label><input id="gh-token" type="password" placeholder="ghp_...（端末に保存）"></div>
+    <div class="row"><button id="btn-easy">かんたん自動保存を設定</button><button id="btn-gh-load">保存内容を読み込む</button></div>
     <div class="row"><button id="btn-gh-toggle">GitHubオートセーブ：OFF</button></div>
-    <div class="small">※暗号化して保存します。リポジトリは公開でOK。URLの #k= を知らない人には中身は読めません。</div>
+    <div class="small">※共同編集ユーザーはGitHubアカウント不要。URLの <b>#k=（秘密鍵）</b> がある人だけ中身を閲覧できます。</div>
   </details>
 
   <div class="hr"></div>
@@ -92,7 +91,6 @@
   <button id="btn-point">点</button>
   <button id="btn-line">線（クリック/タップで頂点・ダブルクリック/ダブルタップで確定）</button>
   <button id="btn-polygon">ポリゴン（同上）</button>
-  <button id="btn-arrow">矢印（終点から±30°枝線）</button>
   <button id="btn-circle">円（中心→移動→クリックで確定）</button>
   <button id="btn-trash">選択を削除</button>
 
@@ -111,12 +109,12 @@
 
 <script>
 (function(){
-  /* ===== util ===== */
+  /* ========= ユーティリティ ========= */
   const $=(id)=>document.getElementById(id);
   const setStatus=(s)=>{ const el=$('status'); if(el) el.textContent=s; };
   const setActive=(id)=>{ document.querySelectorAll('.toolbar button').forEach(b=>b.classList.remove('active')); $(id)?.classList.add('active'); };
 
-  /* ===== room=20 ===== */
+  /* ========= 共同編集 room=20 ========= */
   const CHARS="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
   function randomRoom(n=20){ const a=new Uint32Array(n); crypto.getRandomValues(a); let s=""; for(let i=0;i<n;i++) s+=CHARS[a[i]%CHARS.length]; return s; }
   function ensureRoom(){
@@ -126,7 +124,7 @@
   }
   const room=ensureRoom();
 
-  /* ===== secret key in #k= (base64url 32B) ===== */
+  /* ========= #k=（32バイトの鍵をURLに付与／取得） ========= */
   const b64u = {
     enc:(buf)=>btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,''),
     dec:(str)=>Uint8Array.from(atob(str.replace(/-/g,'+').replace(/_/g,'/')),c=>c.charCodeAt(0))
@@ -136,9 +134,7 @@
     const m=h.match(/(?:^|#|&)k=([A-Za-z0-9\-_]+)/);
     return m? b64u.dec(m[1]) : null;
   }
-  async function importKey(rawBytes){
-    return await crypto.subtle.importKey('raw', rawBytes, 'AES-GCM', false, ['encrypt','decrypt']);
-  }
+  async function importKey(raw){ return await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt','decrypt']); }
   async function encryptText(txt, rawKey){
     const key=await importKey(rawKey);
     const iv=crypto.getRandomValues(new Uint8Array(12));
@@ -152,16 +148,22 @@
     const pt=await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct);
     return new TextDecoder().decode(pt);
   }
-  $('btn-key').onclick=()=>{
-    let raw=getKeyFromHash();
-    if(!raw){ const bytes=new Uint8Array(32); crypto.getRandomValues(bytes); raw=bytes; }
-    const u=new URL(location.href);
-    u.hash = 'k=' + b64u.enc(raw);
+  function ensureKeyInUrl(){
+    if(getKeyFromHash()) return;
+    const raw=new Uint8Array(32); crypto.getRandomValues(raw);
+    const u=new URL(location.href); u.hash='k='+b64u.enc(raw);
     history.replaceState({},'',u);
-    alert('秘密鍵をURLに付与しました。このURLを共有してください（#k= を消すと復号できません）。');
+  }
+  ensureKeyInUrl();
+
+  /* ========= 共有URL（room + #k= をそのままコピー） ========= */
+  $('btn-share').onclick = async ()=>{
+    const u=new URL(location.href);
+    try{ await navigator.clipboard.writeText(u.toString()); alert('コピーしました：\n'+u.toString()); }
+    catch{ prompt('このURLをコピーしてください', u.toString()); }
   };
 
-  /* ===== Map & basemap ===== */
+  /* ========= 地図 ========= */
   const map=new maplibregl.Map({
     container:'map',
     style:{
@@ -190,11 +192,11 @@
     bases.forEach((id,i)=> map.setLayoutProperty(id,'visibility', i===baseIdx?'visible':'none'));
   };
 
-  /* ===== Draw ===== */
+  /* ========= Draw（既定スタイル＝プレビュー確実に可視） ========= */
   const Draw=new MapboxDraw({ displayControlsDefault:false, defaultMode:'simple_select' });
   map.addControl(Draw,'top-left');
 
-  /* ===== pins ===== */
+  /* ========= ピン画像 ========= */
   function addImages(){
     if(!map.hasImage('phn-pin')){
       const svg=`<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><path fill='#E52525' d='M32 2C20.4 2 11 11.4 11 23c0 14.5 21 39 21 39s21-24.5 21-39C53 11.4 43.6 2 32 2z'/><circle cx='32' cy='23' r='9' fill='#fff'/></svg>`;
@@ -202,14 +204,12 @@
     }
   }
 
-  /* ===== layers ===== */
-  function moveTop(id){ if(map.getLayer(id)) map.moveLayer(id); }
+  /* ========= 完成図形（白ハロ）＋点クラスタ ========= */
   function moveUnderDraw(ids){
     const layers=map.getStyle().layers||[]; let lastDraw=null;
     for(const l of layers){ if(l.id.startsWith('gl-draw-')) lastDraw=l.id; }
     if(!lastDraw) return;
     ids.forEach(id=>{ if(map.getLayer(id)) map.moveLayer(id, lastDraw); });
-    moveTop('arrow-heads-casing'); moveTop('arrow-heads');
   }
 
   map.on('load', ()=>{
@@ -244,19 +244,17 @@
     map.addLayer({id:'phn-points-unclustered', type:'symbol', source:'phn-points', filter:['!',['has','point_count']],
       layout:{'icon-image':'phn-pin','icon-size':0.9,'icon-allow-overlap':true,'icon-anchor':'bottom'}});
 
-    map.addSource('arrow-heads',{type:'geojson',data:{type:'FeatureCollection',features:[]}}); 
-    map.addLayer({id:'arrow-heads-casing',type:'line',source:'arrow-heads',
-      paint:{'line-color':'#fff','line-width':['+', ['coalesce',['get','stroke-width'],3], 4],'line-cap':'round','line-join':'round'}});
-    map.addLayer({id:'arrow-heads',type:'line',source:'arrow-heads',
-      paint:{'line-color':['coalesce',['get','stroke'],'#2b7fff'],'line-width':['coalesce',['get','stroke-width'],3],'line-cap':'round','line-join':'round'}});
+    // 円プレビュー（ここで必ず作っておく）
+    map.addSource('circle-preview',{type:'geojson',data:{type:'FeatureCollection',features:[]}});
+    map.addLayer({id:'circle-preview-line-casing',type:'line',source:'circle-preview',paint:{'line-color':'#fff','line-width':7,'line-dasharray':[2,1]}});
+    map.addLayer({id:'circle-preview-line',type:'line',source:'circle-preview',paint:{'line-color':'#1e90ff','line-width':3,'line-dasharray':[2,1]}});
+    map.addLayer({id:'circle-preview-fill',type:'fill',source:'circle-preview',paint:{'fill-color':'#1e90ff','fill-opacity':0.2}});
 
-    moveUnderDraw(['phn-fill','phn-outline-casing','phn-outline','phn-line-casing','phn-line',
-                   'phn-points-unclustered','phn-clusters','phn-cluster-count']);
+    moveUnderDraw(['phn-fill','phn-outline-casing','phn-outline','phn-line-casing','phn-line','phn-points-unclustered','phn-clusters','phn-cluster-count','circle-preview-line-casing','circle-preview-line','circle-preview-fill']);
   });
-  map.on('styledata', ()=>moveUnderDraw(['phn-fill','phn-outline-casing','phn-outline','phn-line-casing','phn-line',
-                                         'phn-points-unclustered','phn-clusters','phn-cluster-count']));
+  map.on('styledata', ()=>moveUnderDraw(['phn-fill','phn-outline-casing','phn-outline','phn-line-casing','phn-line','phn-points-unclustered','phn-clusters','phn-cluster-count','circle-preview-line-casing','circle-preview-line','circle-preview-fill']));
 
-  /* ===== Yjs realtime ===== */
+  /* ========= リアルタイム（Yjs） ========= */
   let ydoc=null, provider=null, yfeatures=null, realtime=false;
   try{
     ydoc=new Y.Doc();
@@ -269,7 +267,7 @@
   }catch{ setStatus('ローカル編集（同期なし）'); }
   const syncToY=()=>{ if(!realtime) return; const a=Draw.getAll().features; ydoc.transact(()=>{ yfeatures.delete(0,yfeatures.length); yfeatures.push(a); }); };
 
-  /* ===== labels ===== */
+  /* ========= ラベル ========= */
   const PIN_OFFSET_Y=56;
   const labelCache=new Map(); let showLabels=true;
   function updateLabels(){
@@ -292,70 +290,49 @@
     for(const [id,m] of labelCache){ if(!current.has(id)){ m.remove(); labelCache.delete(id);} }
   }
 
-  /* ===== arrow heads（±30°） ===== */
-  const HEAD_ANGLE=30;
-  function headLenMeters(a,b){
-    const m=turf.distance(turf.point(a), turf.point(b), {units:'kilometers'})*1000;
-    return Math.max(12, Math.min(m*0.25, 80));
-  }
-  function arrowHeadSegments(coords){
-    if(!coords || coords.length<2) return [];
-    const a=coords[coords.length-2], b=coords[coords.length-1];
-    const br=turf.bearing(turf.point(a), turf.point(b));
-    const L=headLenMeters(a,b)/1000;
-    const left = turf.destination(turf.point(b), L, br+180-HEAD_ANGLE, {units:'kilometers'}).geometry.coordinates;
-    const right= turf.destination(turf.point(b), L, br+180+HEAD_ANGLE, {units:'kilometers'}).geometry.coordinates;
-    return [
-      {type:'Feature',geometry:{type:'LineString',coordinates:[b,left]}},
-      {type:'Feature',geometry:{type:'LineString',coordinates:[b,right]}}
-    ];
-  }
-  function updateArrowHeads(){
-    const feats=[];
-    const all=Draw.getAll().features;
-    for(const f of all){
-      if(f.geometry?.type==='LineString' && f.properties?.arrow){
-        const segs=arrowHeadSegments(f.geometry.coordinates);
-        for(const s of segs){
-          s.properties={
-            stroke: f.properties?.stroke ?? '#2b7fff',
-            'stroke-width': f.properties?.['stroke-width'] ?? 3,
-            parent:f.id, role:'arrow-head'
-          };
-          feats.push(s);
-        }
-      }
-    }
-    const src=map.getSource('arrow-heads');
-    if(src){ src.setData({type:'FeatureCollection',features:feats}); moveTop('arrow-heads-casing'); moveTop('arrow-heads'); }
-  }
-
   function refresh(){
     const all=Draw.getAll();
     const linesPolys=all.features.filter(f=>f.geometry.type!=='Point');
     const points=all.features.filter(f=>f.geometry.type==='Point');
     map.getSource('phn-style')?.setData({type:'FeatureCollection',features:linesPolys});
     map.getSource('phn-points')?.setData({type:'FeatureCollection',features:points});
-    updateLabels(); updateArrowHeads(); scheduleSave();
+    updateLabels(); scheduleSave(); // GitHubオートセーブ用
   }
 
-  /* ===== UI ===== */
-  let arrowMode=false, circleMode=false, circleCenter=null;
-  $('btn-select').onclick = ()=>{ Draw.changeMode('simple_select'); setActive('btn-select'); arrowMode=false; circleMode=false; map.dragPan.enable(); map.doubleClickZoom.enable(); };
-  $('btn-point').onclick  = ()=>{ Draw.changeMode('draw_point');   setActive('btn-point');  arrowMode=false; circleMode=false; map.dragPan.enable(); map.doubleClickZoom.enable(); };
-  $('btn-line').onclick   = ()=>{ Draw.changeMode('draw_line_string'); setActive('btn-line');  arrowMode=false; circleMode=false; map.dragPan.disable(); map.doubleClickZoom.disable(); };
-  $('btn-polygon').onclick= ()=>{ Draw.changeMode('draw_polygon');     setActive('btn-polygon'); arrowMode=false; circleMode=false; map.dragPan.disable(); map.doubleClickZoom.disable(); };
-  $('btn-arrow').onclick  = ()=>{ arrowMode=true; Draw.changeMode('draw_line_string'); setActive('btn-arrow'); circleMode=false; map.dragPan.disable(); map.doubleClickZoom.disable(); setStatus('矢印：終点に向けて線→ダブルクリック/ダブルタップで確定'); };
-  $('btn-circle').onclick = ()=>{ circleMode=true; circleCenter=null; setActive('btn-circle'); arrowMode=false; map.dragPan.enable(); map.doubleClickZoom.enable(); };
+  /* ========= 円モード（反応しない不具合の修正：確実に有効化） ========= */
+  let circleMode=false, circleCenter=null;
+  function exitCircle(){ circleMode=false; circleCenter=null; map.getSource('circle-preview')?.setData({type:'FeatureCollection',features:[]}); map.getCanvas().style.cursor=''; }
+  function circlePreview(center, ll){
+    if(!center||!ll) return;
+    const r=turf.distance(turf.point(center), turf.point([ll.lng,ll.lat]), {units:'kilometers'})*1000;
+    const poly=turf.circle(center, Math.max(r,1), {steps:64, units:'meters'});
+    map.getSource('circle-preview')?.setData(poly);
+  }
+  map.on('mousemove', e=>{ if(circleMode && circleCenter) circlePreview(circleCenter, e.lngLat); });
+  map.on('click', e=>{
+    if(!circleMode) return;
+    if(!circleCenter){ circleCenter=[e.lngLat.lng,e.lngLat.lat]; circlePreview(circleCenter,e.lngLat); }
+    else{
+      const r=turf.distance(turf.point(circleCenter),turf.point([e.lngLat.lng,e.lngLat.lat]),{units:'kilometers'})*1000;
+      const poly=turf.circle(circleCenter, Math.max(r,1), {steps:64, units:'meters'});
+      const id=Draw.add({type:'Feature', geometry:poly.geometry, properties:{shape:'circle', radius_m:Math.round(r)}});
+      exitCircle(); finishWithComment(id);
+    }
+  });
 
+  /* ========= UI（矢印関連は完全削除） ========= */
+  $('btn-select').onclick = ()=>{ Draw.changeMode('simple_select'); setActive('btn-select'); exitCircle(); map.dragPan.enable(); map.doubleClickZoom.enable(); };
+  $('btn-point').onclick  = ()=>{ Draw.changeMode('draw_point');   setActive('btn-point');  exitCircle(); map.dragPan.enable(); map.doubleClickZoom.enable(); };
+  $('btn-line').onclick   = ()=>{ Draw.changeMode('draw_line_string'); setActive('btn-line');  exitCircle(); map.dragPan.disable(); map.doubleClickZoom.disable(); };
+  $('btn-polygon').onclick= ()=>{ Draw.changeMode('draw_polygon');     setActive('btn-polygon'); exitCircle(); map.dragPan.disable(); map.doubleClickZoom.disable(); };
+  $('btn-circle').onclick = ()=>{ circleMode=true; circleCenter=null; setActive('btn-circle'); Draw.changeMode('simple_select'); map.dragPan.enable(); map.doubleClickZoom.enable(); map.getCanvas().style.cursor='crosshair'; };
   $('btn-trash').onclick  = ()=>{ Draw.trash(); refresh(); syncToY(); };
 
   map.on('draw.modechange', e=>{
     const m=e.mode;
     (m==='draw_line_string'||m==='draw_polygon')? (map.dragPan.disable(), map.doubleClickZoom.disable())
-                                                : (map.dragPan.enable(), map.doubleClickZoom.enable(), arrowMode=false);
-    moveUnderDraw(['phn-fill','phn-outline-casing','phn-outline','phn-line-casing','phn-line',
-                   'phn-points-unclustered','phn-clusters','phn-cluster-count']);
+                                                : (map.dragPan.enable(), map.doubleClickZoom.enable());
+    moveUnderDraw(['phn-fill','phn-outline-casing','phn-outline','phn-line-casing','phn-line','phn-points-unclustered','phn-clusters','phn-cluster-count','circle-preview-line-casing','circle-preview-line','circle-preview-fill']);
   });
 
   function finishWithComment(id){
@@ -366,37 +343,11 @@
       setTimeout(()=>{ Draw.changeMode('simple_select'); setActive('btn-select'); map.dragPan.enable(); map.doubleClickZoom.enable(); },0);
     });
   }
-  map.on('draw.create', e=>{
-    const f=e.features[0];
-    if(arrowMode && f.geometry.type==='LineString'){ Draw.setFeatureProperty(f.id,'arrow',true); }
-    finishWithComment(f.id); arrowMode=false;
-  });
+  map.on('draw.create', e=>{ finishWithComment(e.features[0].id); });
   map.on('draw.update', ()=>{ refresh(); syncToY(); });
   map.on('draw.delete', ()=>{ refresh(); syncToY(); });
-  map.on('draw.render', ()=>{ updateArrowHeads(); });
 
-  // circle
-  function circlePreview(center, ll){
-    if(!center||!ll) return;
-    const r=turf.distance(turf.point(center), turf.point([ll.lng,ll.lat]), {units:'kilometers'})*1000;
-    const poly=turf.circle(center, Math.max(r,1), {steps:64, units:'meters'});
-    if(map.getSource('circle-preview')) map.getSource('circle-preview').setData(poly);
-  }
-  map.addSource?.('circle-preview',{type:'geojson',data:{type:'FeatureCollection',features:[]}}); // safety
-  map.on('mousemove', e=>{ if(circleMode && circleCenter) circlePreview(circleCenter, e.lngLat); });
-  map.on('click', e=>{
-    if(!circleMode) return;
-    if(!circleCenter){ circleCenter=[e.lngLat.lng,e.lngLat.lat]; circlePreview(circleCenter,e.lngLat); }
-    else{
-      const r=turf.distance(turf.point(circleCenter),turf.point([e.lngLat.lng,e.lngLat.lat]),{units:'kilometers'})*1000;
-      const poly=turf.circle(circleCenter, Math.max(r,1), {steps:64, units:'meters'});
-      const id=Draw.add({type:'Feature', geometry:poly.geometry, properties:{shape:'circle', radius_m:Math.round(r)}});
-      circleMode=false; circleCenter=null; if(map.getSource('circle-preview')) map.getSource('circle-preview').setData({type:'FeatureCollection',features:[]});
-      finishWithComment(id);
-    }
-  });
-
-  /* ===== style apply ===== */
+  /* ========= スタイル適用 ========= */
   function applyStyle(feats){
     const s=$('stroke').value, w=+$('strokeW').value, f=$('fill').value, o=parseFloat($('fillO').value);
     feats.forEach(ft=>{
@@ -409,7 +360,7 @@
   $('btn-apply-selected').onclick=()=>{ const sel=Draw.getSelected().features; if(!sel.length){alert('図形を選択してください');return;} applyStyle(sel); };
   $('btn-apply-all').onclick = ()=> applyStyle(Draw.getAll().features);
 
-  /* ===== export ===== */
+  /* ========= ローカル保存 ========= */
   function ts(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`; }
   function download(name, blob){ const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(a.href),1000); }
   $('btn-save-geojson').onclick=()=>{ const fc=Draw.getAll(); download(`PhnField_${ts()}.geojson`, new Blob([JSON.stringify(fc,null,2)],{type:'application/geo+json'})); };
@@ -418,44 +369,32 @@
   $('btn-clear').onclick=()=>{ if(confirm('全て削除しますか？')){ Draw.deleteAll(); refresh(); syncToY(); } };
   $('btn-toggle-labels').onclick=()=>{ showLabels=!showLabels; for(const [,mk] of labelCache){ mk.getElement().style.display=showLabels?'':'none'; } if(showLabels) updateLabels(); };
 
-  $('btn-share').onclick = async ()=>{
-    const u=new URL(location.href); u.hash = location.hash; // #k= を保持
-    try{ await navigator.clipboard.writeText(u.toString()); alert('コピーしました：\n'+u.toString()); }
-    catch{ prompt('このURLをコピーしてください', u.toString()); }
-  };
-
-  /* ===== GitHub encrypted autosave/load ===== */
+  /* ========= GitHub 暗号化保存（管理者だけ書込） ========= */
   const ghOwner=$('gh-owner'), ghRepo=$('gh-repo'), ghBranch=$('gh-branch'), ghPath=$('gh-path'), ghToken=$('gh-token');
   ghPath.value = `phnfield/${room}.bin`; // 既定の保存先
-
-  // 設定の永続化（ローカルのみ）
   const LSKEY='phnfield-gh';
+
   function loadGhSettings(){
     try{
-      const s=JSON.parse(localStorage.getItem(LSKEY)||'{}');
-      if(s.owner) ghOwner.value=s.owner;
-      if(s.repo)  ghRepo.value=s.repo;
-      if(s.branch)ghBranch.value=s.branch;
-      if(s.token) ghToken.value=s.token;
-      if(s.path)  ghPath.value=s.path;
-      if(s.auto)  toggleAutosave(true);
+      const s=JSON.parse(localStorage.getItem(LSKEY)||'null');
+      if(!s) return;
+      ghOwner.value=s.owner||''; ghRepo.value=s.repo||''; ghBranch.value=s.branch||'main'; ghPath.value=s.path||`phnfield/${room}.bin`; ghToken.value=s.token||'';
+      if(s.auto) toggleAutosave(true, false);
     }catch{}
   }
   function saveGhSettings(){
     localStorage.setItem(LSKEY, JSON.stringify({
-      owner:ghOwner.value.trim(), repo:ghRepo.value.trim(), branch:ghBranch.value.trim(),
-      path:ghPath.value.trim(), token:ghToken.value, auto:isAuto
+      owner:ghOwner.value.trim(), repo:ghRepo.value.trim(), branch:ghBranch.value.trim(), path:ghPath.value.trim(), token:ghToken.value, auto:isAuto
     }));
-    alert('設定を保存しました（PATはブラウザにのみ保存されます）');
   }
   $('gh-sec').addEventListener('toggle', ()=>{ if($('gh-sec').open) loadGhSettings(); });
+  loadGhSettings(); // 初回
 
-  // GitHub API helpers
   function ghHeaders(token){ return { 'Authorization': 'Bearer '+token, 'Accept':'application/vnd.github+json', 'Content-Type':'application/json' }; }
   async function ghGetMeta(owner,repo,path,branch){
     const url=`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`;
     const r=await fetch(url); if(r.status===404) return null; if(!r.ok) throw new Error('GET meta '+r.status);
-    return await r.json(); // {sha, content(base64) ...}
+    return await r.json();
   }
   async function ghPut(owner,repo,path,branch,token,bytes,msg){
     const url=`https://api.github.com/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
@@ -473,20 +412,19 @@
     return new TextDecoder().decode(raw);
   }
 
-  // 保存・読込
   async function saveToGitHub(){
     const owner=ghOwner.value.trim(), repo=ghRepo.value.trim(), branch=ghBranch.value.trim(), path=ghPath.value.trim(), token=ghToken.value.trim();
     if(!owner || !repo || !branch || !path || !token){ setStatus('GitHub保存：未設定'); return; }
-    const key = getKeyFromHash(); if(!key){ alert('URLに #k= 秘密鍵がありません。「秘密鍵をURLに付与」を押してください。'); return; }
+    const key=getKeyFromHash(); if(!key){ alert('URLに #k=（秘密鍵）がありません'); return; }
     const fc=Draw.getAll();
     const payload=await encryptText(JSON.stringify(fc), key);
     await ghPut(owner,repo,path,branch,token,new TextEncoder().encode(payload),`save ${new Date().toISOString()}`);
-    setStatus('GitHub保存：完了');
+    setStatus('GitHub保存：完了'); saveGhSettings();
   }
   async function loadFromGitHub(){
     const owner=ghOwner.value.trim(), repo=ghRepo.value.trim(), branch=ghBranch.value.trim(), path=ghPath.value.trim();
     if(!owner || !repo || !branch || !path){ alert('Owner/Repo/Branch/Path を設定してください'); return; }
-    const key=getKeyFromHash(); if(!key){ alert('URLに #k= 秘密鍵がありません'); return; }
+    const key=getKeyFromHash(); if(!key){ alert('URLに #k=（秘密鍵）がありません'); return; }
     const payload=await ghGet(owner,repo,path,branch);
     if(!payload){ alert('GitHubにファイルが見つかりません'); return; }
     const txt=await decryptText(payload, key);
@@ -494,30 +432,51 @@
     Draw.deleteAll(); Draw.add(fc); refresh(); syncToY();
     alert('GitHubから読み込みました');
   }
-
-  $('btn-gh-save').onclick=saveToGitHub;
   $('btn-gh-load').onclick=loadFromGitHub;
+
+  // かんたん自動保存（説明ポップアップ付き）
+  $('btn-easy').onclick=async ()=>{
+    alert(
+`🔐 PhnField かんたん自動保存（管理者向け）
+
+1) GitHub で空の公開リポを作成（例: owner=you, repo=phnfield-data）
+2) GitHub の個人アクセストークン（PAT）を作成
+   - Fine-grained / repo への contents:write 権限のみ
+3) この画面に Owner / Repo / Branch（通常 main）と PAT を入力
+4) 「GitHubオートセーブ：ON」を押す
+以後、この端末で編集すると自動で暗号化保存されます。
+共有相手は URL（room= と #k= を含む）を開くだけで閲覧可能・編集はリアルタイム同期（Yjs）で行えます。`
+    );
+    // 必要なら鍵を付与
+    ensureKeyInUrl();
+    // 自動ON（検証保存も走る）
+    toggleAutosave(true, true);
+  };
 
   // オートセーブ（1秒デバウンス）
   let isAuto=false, saveTimer=null;
   function scheduleSave(){ if(!isAuto) return; clearTimeout(saveTimer); saveTimer=setTimeout(saveToGitHub, 1000); }
-  function toggleAutosave(forceOn){
+  function toggleAutosave(forceOn, doTestSave){
     isAuto = (forceOn===true) ? true : !isAuto;
     $('btn-gh-toggle').textContent = 'GitHubオートセーブ：' + (isAuto?'ON':'OFF');
     saveGhSettings();
-    if(isAuto) scheduleSave();
+    if(isAuto && doTestSave) scheduleSave();
   }
   $('btn-gh-toggle').onclick=()=>toggleAutosave();
 
-  // 「設定を保存」は PAT 入力欄のフォーカス外しで保存しやすく
-  ghOwner.addEventListener('change', saveGhSettings);
-  ghRepo.addEventListener('change', saveGhSettings);
-  ghBranch.addEventListener('change', saveGhSettings);
-  ghPath.addEventListener('change', saveGhSettings);
-  ghToken.addEventListener('change', saveGhSettings);
+  // 初期：#k= があり、Owner/Repo/Pathが入っていれば「閲覧者」は自動読込
+  window.addEventListener('load', async ()=>{
+    const key=getKeyFromHash();
+    if(key && ghOwner.value && ghRepo.value && ghPath.value){
+      try{ await loadFromGitHub(); }catch(e){ /* 失敗しても続行 */ }
+    }
+  });
 
-  // 初期
-  setStatus(`リアルタイム共同：room=${room} / GitHubは任意（暗号化保存）`);
+  /* ========= 補助 ========= */
+  function ts(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}${p(d.getMonth()+1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`; }
+
+  // 初期ステータス
+  setStatus(`リアルタイム共同：room=${room} / GitHubは任意（暗号化保存・閲覧はURLだけでOK）`);
 })();
 </script>
 </body>
